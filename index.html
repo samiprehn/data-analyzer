@@ -97,18 +97,22 @@
 
             if (type === 'numeric') {
                 const nums = nn.map(Number).filter(n => !isNaN(n));
+                const q1 = quantile(nums, 0.25), q3 = quantile(nums, 0.75);
+                const iqr = q3 - q1;
+                const outliers = nums.filter(n => n < q1 - 1.5 * iqr || n > q3 + 1.5 * iqr);
                 stats[col] = {
                     ...base, type, nums,
                     mean: mean(nums), median: median(nums), std: std(nums),
                     min: Math.min(...nums), max: Math.max(...nums),
-                    q1: quantile(nums, 0.25), q3: quantile(nums, 0.75),
-                    skewness: skew(nums),
+                    q1, q3, skewness: skew(nums),
+                    outlierCount: outliers.length,
+                    outlierPct: outliers.length / nums.length,
                 };
             } else {
                 const counts = {};
                 nn.forEach(v => { const k = String(v); counts[k] = (counts[k] || 0) + 1; });
                 const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-                stats[col] = { ...base, type, top };
+                stats[col] = { ...base, type, top, mode: top[0] ?? null };
             }
         });
         return { types, stats };
@@ -151,6 +155,12 @@
             const nonNullCount = stats[col].total - stats[col].nulls;
             if (stats[col].unique === nonNullCount && nonNullCount > 20)
                 out.push({ lvl: 'info', msg: `<b>${col}</b> has all unique values — likely an ID column` });
+        });
+
+        // Outliers
+        columns.forEach(col => {
+            if (types[col] === 'numeric' && stats[col].outlierPct > 0.05)
+                out.push({ lvl: 'warn', msg: `<b>${col}</b> has ${stats[col].outlierCount.toLocaleString()} outliers (${pct(stats[col].outlierPct)}) based on 1.5× IQR` });
         });
 
         // Skewness
@@ -318,6 +328,27 @@
                     </div>
                 </section>
 
+                <!-- Sample data -->
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🗂 Sample Data <span class="text-white/30 font-normal text-sm">(first 10 rows)</span></h2>
+                    <div class="bg-white rounded-xl shadow-sm overflow-auto">
+                        <table class="text-sm w-full">
+                            <thead>
+                                <tr class="border-b border-gray-100">
+                                    ${columns.map(col => `<th class="text-left text-xs font-semibold text-gray-400 px-3 py-2 whitespace-nowrap">${col}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.slice(0, 10).map((row, i) => `
+                                    <tr class="${i % 2 === 0 ? '' : 'bg-gray-50'} border-b border-gray-50 last:border-0">
+                                        ${columns.map(col => `<td class="px-3 py-1.5 text-gray-700 whitespace-nowrap max-w-xs truncate" title="${row[col] ?? ''}">${row[col] ?? '<span class=\'text-gray-300\'>null</span>'}</td>`).join('')}
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
                 <!-- Column profiles -->
                 <section>
                     <h2 class="text-base font-semibold text-white mb-3">🔍 Column Profiles</h2>
@@ -334,18 +365,21 @@
                                 }
                                 <div class="grid grid-cols-3 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-gray-100">
                                     ${types[col] === 'numeric' ? `
-                                        ${statBox('Mean',   fmtNum(stats[col].mean))}
-                                        ${statBox('Median', fmtNum(stats[col].median))}
-                                        ${statBox('Std',    fmtNum(stats[col].std))}
-                                        ${statBox('Min',    fmtNum(stats[col].min))}
-                                        ${statBox('Max',    fmtNum(stats[col].max))}
-                                        ${statBox('Nulls',  pct(stats[col].nullPct))}
+                                        ${statBox('Mean',     fmtNum(stats[col].mean))}
+                                        ${statBox('Median',   fmtNum(stats[col].median))}
+                                        ${statBox('Std',      fmtNum(stats[col].std))}
+                                        ${statBox('Min',      fmtNum(stats[col].min))}
+                                        ${statBox('Max',      fmtNum(stats[col].max))}
+                                        ${statBox('Nulls',    pct(stats[col].nullPct))}
                                     ` : `
-                                        ${statBox('Unique', stats[col].unique.toLocaleString())}
-                                        ${statBox('Nulls',  pct(stats[col].nullPct))}
-                                        ${statBox('Total',  stats[col].total.toLocaleString())}
+                                        ${statBox('Mode',   stats[col].mode ? (String(stats[col].mode[0]).length > 12 ? String(stats[col].mode[0]).slice(0,10)+'…' : stats[col].mode[0]) : '—')}
+                                        ${statBox('Unique',  stats[col].unique.toLocaleString())}
+                                        ${statBox('Nulls',   pct(stats[col].nullPct))}
                                     `}
                                 </div>
+                                ${types[col] === 'numeric' && stats[col].outlierCount > 0 ? `
+                                    <div class="text-xs mt-2 text-amber-600">⚠ ${stats[col].outlierCount.toLocaleString()} outliers (${pct(stats[col].outlierPct)})</div>
+                                ` : ''}
                             </div>
                         `).join('')}
                     </div>
