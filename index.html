@@ -359,9 +359,12 @@
                                     <span class="font-semibold text-gray-800 truncate mr-2 text-sm" title="${col}">${col}</span>
                                     ${typeBadge(types[col])}
                                 </div>
-                                ${types[col] === 'numeric' || stats[col].unique <= 20
-                                    ? `<div id="col-chart-${idx}" style="height:150px"></div>`
-                                    : `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">${stats[col].unique.toLocaleString()} unique values</div>`
+                                ${types[col] === 'numeric'
+                                    ? `<div id="col-hist-${idx}" style="height:130px"></div>
+                                       <div id="col-box-${idx}" style="height:80px"></div>`
+                                    : stats[col].unique <= 20
+                                        ? `<div id="col-chart-${idx}" style="height:150px"></div>`
+                                        : `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">${stats[col].unique.toLocaleString()} unique values</div>`
                                 }
                                 <div class="grid grid-cols-3 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-gray-100">
                                     ${types[col] === 'numeric' ? `
@@ -372,7 +375,14 @@
                                         ${statBox('Max',      fmtNum(stats[col].max))}
                                         ${statBox('Nulls',    pct(stats[col].nullPct))}
                                     ` : `
-                                        ${statBox('Mode',   stats[col].mode ? (String(stats[col].mode[0]).length > 12 ? String(stats[col].mode[0]).slice(0,10)+'…' : stats[col].mode[0]) : '—')}
+                                        ${statBox('Mode', (() => {
+                                            const m = stats[col].mode;
+                                            if (!m) return '—';
+                                            const tied = stats[col].top.length > 1 && stats[col].top[0][1] === stats[col].top[1][1];
+                                            if (tied) return '—';
+                                            const v = String(m[0]);
+                                            return v.length > 12 ? v.slice(0, 10) + '…' : v;
+                                        })())}
                                         ${statBox('Unique',  stats[col].unique.toLocaleString())}
                                         ${statBox('Nulls',   pct(stats[col].nullPct))}
                                     `}
@@ -439,18 +449,32 @@
             columns.forEach((col, idx) => {
                 const el   = document.getElementById(`col-chart-${idx}`);
                 const stat = stats[col];
-                if (!el) return;
 
                 if (types[col] === 'numeric') {
-                    Plotly.newPlot(el, [{
+                    const hist = document.getElementById(`col-hist-${idx}`);
+                    const box  = document.getElementById(`col-box-${idx}`);
+                    if (hist) Plotly.newPlot(hist, [{
                         type: 'histogram', x: stat.nums,
                         marker: { color: '#6366f1', opacity: 0.85 },
                         nbinsx: 30,
                     }], {
-                        margin: { t: 5, r: 5, b: 28, l: 40 },
+                        margin: { t: 5, r: 5, b: 25, l: 40 },
                         paper_bgcolor: 'white', plot_bgcolor: '#f9fafb',
                         xaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
                         yaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
+                        showlegend: false,
+                    }, CFG);
+                    if (box) Plotly.newPlot(box, [{
+                        type: 'box', x: stat.nums,
+                        boxpoints: 'outliers',
+                        marker: { color: '#6366f1', size: 3, opacity: 0.5 },
+                        line: { color: '#6366f1' },
+                        fillcolor: 'rgba(99,102,241,0.12)',
+                    }], {
+                        margin: { t: 5, r: 5, b: 20, l: 5 },
+                        paper_bgcolor: 'white', plot_bgcolor: '#f9fafb',
+                        xaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
+                        yaxis: { visible: false },
                         showlegend: false,
                     }, CFG);
                 } else if (stat.unique <= 20) {
