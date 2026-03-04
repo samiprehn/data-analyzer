@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Explorer</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📊</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+        * { font-family: 'DM Sans', sans-serif; }
+        .drop-active { border-color: #818cf8 !important; background: rgba(129,140,248,0.06) !important; }
+        .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #818cf8;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-[#0f0f0f] min-h-screen">
+    <div id="app"></div>
+    <script>
+
+    // ── Math helpers ──────────────────────────────────────────────────────────
+
+    function fmtNum(n, d = 2) {
+        if (n === null || n === undefined || isNaN(n)) return '—';
+        const abs = Math.abs(n);
+        if (abs >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+        if (abs >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (abs >= 1e4) return Math.round(n).toLocaleString();
+        return Number(n.toFixed(d)).toString();
+    }
+
+    function pct(n) { return (n * 100).toFixed(1) + '%'; }
+
+    function mean(a)   { return a.reduce((s, x) => s + x, 0) / a.length; }
+    function median(a) {
+        const s = [...a].sort((x, y) => x - y), m = Math.floor(s.length / 2);
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    }
+    function std(a) {
+        const m = mean(a);
+        return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / a.length);
+    }
+    function quantile(a, q) {
+        const s = [...a].sort((x, y) => x - y);
+        const pos = (s.length - 1) * q, lo = Math.floor(pos), hi = Math.ceil(pos);
+        return s[lo] + (s[hi] !== undefined ? s[hi] - s[lo] : 0) * (pos - lo);
+    }
+    function skew(a) {
+        const m = mean(a), s = std(a);
+        if (s === 0) return 0;
+        return a.reduce((r, x) => r + ((x - m) / s) ** 3, 0) / a.length;
+    }
+    function pearson(x, y) {
+        const mx = mean(x), my = mean(y);
+        let n = 0, dx = 0, dy = 0;
+        for (let i = 0; i < x.length; i++) {
+            n  += (x[i] - mx) * (y[i] - my);
+            dx += (x[i] - mx) ** 2;
+            dy += (y[i] - my) ** 2;
+        }
+        return dx === 0 || dy === 0 ? 0 : n / Math.sqrt(dx * dy);
+    }
+
+    // ── Type detection ────────────────────────────────────────────────────────
+
+    function detectType(values) {
+        const nn = values.filter(v => v !== null && v !== undefined && v !== '');
+        if (!nn.length) return 'empty';
+        const bools = new Set(['true','false','yes','no','y','n','0','1']);
+        if (nn.every(v => bools.has(String(v).toLowerCase()))) return 'boolean';
+        if (nn.every(v => v !== '' && !isNaN(+v))) return 'numeric';
+        const dateRx = /^\d{4}-\d{2}-\d{2}$|^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/;
+        if (nn.every(v => dateRx.test(String(v).trim()))) return 'date';
+        return 'categorical';
+    }
+
+    // ── Analysis ──────────────────────────────────────────────────────────────
+
+    function analyze(data, columns) {
+        const types = {}, stats = {};
+        columns.forEach(col => {
+            const vals  = data.map(r => r[col]);
+            const type  = detectType(vals);
+            types[col]  = type;
+            const nulls = vals.filter(v => v === null || v === undefined || v === '').length;
+            const nn    = vals.filter(v => v !== null && v !== undefined && v !== '');
+            const unique = new Set(nn.map(String)).size;
+            const base  = { total: vals.length, nulls, nullPct: nulls / vals.length, unique };
+
+            if (type === 'numeric') {
+                const nums = nn.map(Number).filter(n => !isNaN(n));
+                stats[col] = {
+                    ...base, type, nums,
+                    mean: mean(nums), median: median(nums), std: std(nums),
+                    min: Math.min(...nums), max: Math.max(...nums),
+                    q1: quantile(nums, 0.25), q3: quantile(nums, 0.75),
+                    skewness: skew(nums),
+                };
+            } else {
+                const counts = {};
+                nn.forEach(v => { const k = String(v); counts[k] = (counts[k] || 0) + 1; });
+                const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                stats[col] = { ...base, type, top };
+            }
+        });
+        return { types, stats };
+    }
+
+    function corrMatrix(data, numCols) {
+        const mat = {};
+        numCols.forEach(c1 => {
+            mat[c1] = {};
+            numCols.forEach(c2 => {
+                const pairs = data
+                    .map(r => [+r[c1], +r[c2]])
+                    .filter(([a, b]) => !isNaN(a) && !isNaN(b));
+                mat[c1][c2] = pairs.length < 2 ? null
+                    : pearson(pairs.map(p => p[0]), pairs.map(p => p[1]));
+            });
+        });
+        return mat;
+    }
+
+    function genInsights(columns, types, stats, corr, numCols) {
+        const out = [];
+
+        // Missing values
+        columns.forEach(col => {
+            if (stats[col].nullPct > 0.5)
+                out.push({ lvl: 'error', msg: `<b>${col}</b>: ${pct(stats[col].nullPct)} missing values (${stats[col].nulls.toLocaleString()} rows)` });
+            else if (stats[col].nullPct > 0.2)
+                out.push({ lvl: 'warn',  msg: `<b>${col}</b>: ${pct(stats[col].nullPct)} missing values (${stats[col].nulls.toLocaleString()} rows)` });
+        });
+
+        // Constant columns
+        columns.forEach(col => {
+            if (stats[col].unique === 1)
+                out.push({ lvl: 'warn', msg: `<b>${col}</b> has only one unique value — not useful for analysis` });
+        });
+
+        // ID columns
+        columns.forEach(col => {
+            const nonNullCount = stats[col].total - stats[col].nulls;
+            if (stats[col].unique === nonNullCount && nonNullCount > 20)
+                out.push({ lvl: 'info', msg: `<b>${col}</b> has all unique values — likely an ID column` });
+        });
+
+        // Skewness
+        columns.forEach(col => {
+            if (types[col] === 'numeric' && Math.abs(stats[col].skewness) > 2)
+                out.push({ lvl: 'info', msg: `<b>${col}</b> is heavily ${stats[col].skewness > 0 ? 'right' : 'left'}-skewed (skewness: ${fmtNum(stats[col].skewness)})` });
+        });
+
+        // High correlations
+        for (let i = 0; i < numCols.length; i++) {
+            for (let j = i + 1; j < numCols.length; j++) {
+                const r = corr[numCols[i]]?.[numCols[j]];
+                if (r !== null && r !== undefined && Math.abs(r) > 0.8)
+                    out.push({ lvl: 'info', msg: `<b>${numCols[i]}</b> and <b>${numCols[j]}</b> are highly correlated (r = ${fmtNum(r)})` });
+            }
+        }
+
+        return out;
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    function resetApp() { renderUpload(); }
+
+    function renderUpload() {
+        document.getElementById('app').innerHTML = `
+            <div class="min-h-screen flex flex-col items-center justify-center p-4">
+                <div class="w-full max-w-md">
+                    <div class="text-center mb-8">
+                        <div class="text-6xl mb-4">📊</div>
+                        <h1 class="text-3xl font-bold text-white mb-2">CSV Explorer</h1>
+                        <p class="text-white/40">Instant exploratory data analysis in your browser</p>
+                    </div>
+                    <div id="dropzone" class="border-2 border-dashed border-white/20 rounded-2xl p-12 text-center cursor-pointer hover:border-white/40 transition-all">
+                        <div class="text-4xl mb-3">📂</div>
+                        <p class="text-white/70 font-semibold mb-1">Drop your CSV here</p>
+                        <p class="text-white/30 text-sm">or click to browse</p>
+                        <input type="file" id="file-input" accept=".csv" class="hidden">
+                    </div>
+                    <p class="text-center text-white/20 text-xs mt-4">🔒 Your data never leaves your browser</p>
+                </div>
+            </div>
+        `;
+        setupDropzone();
+    }
+
+    function setupDropzone() {
+        const dz = document.getElementById('dropzone');
+        const fi = document.getElementById('file-input');
+        dz.addEventListener('click', () => fi.click());
+        fi.addEventListener('change', e => e.target.files[0] && loadFile(e.target.files[0]));
+        dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drop-active'); });
+        dz.addEventListener('dragleave', ()  => dz.classList.remove('drop-active'));
+        dz.addEventListener('drop', e => {
+            e.preventDefault(); dz.classList.remove('drop-active');
+            const f = e.dataTransfer.files[0];
+            if (f && f.name.toLowerCase().endsWith('.csv')) loadFile(f);
+        });
+    }
+
+    function loadFile(file) {
+        document.getElementById('app').innerHTML = `
+            <div class="min-h-screen flex items-center justify-center">
+                <div class="text-center">
+                    <div class="spinner mx-auto mb-4"></div>
+                    <p class="text-white/50">Analyzing ${file.name}…</p>
+                </div>
+            </div>
+        `;
+        Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            dynamicTyping: false,
+            complete: result => {
+                const data    = result.data;
+                const columns = result.meta.fields;
+                const { types, stats } = analyze(data, columns);
+                const numCols = columns.filter(c => types[c] === 'numeric');
+                const catCols = columns.filter(c => types[c] === 'categorical' || types[c] === 'boolean');
+                const corr    = numCols.length >= 2 ? corrMatrix(data, numCols) : {};
+                const insights = genInsights(columns, types, stats, corr, numCols);
+                renderAnalysis(file.name, data, columns, types, stats, numCols, catCols, corr, insights);
+            },
+            error: err => {
+                document.getElementById('app').innerHTML = `
+                    <div class="min-h-screen flex items-center justify-center">
+                        <p class="text-red-400">Error parsing file: ${err.message}</p>
+                    </div>
+                `;
+            }
+        });
+    }
+
+    function typeBadge(type) {
+        const styles = {
+            numeric:     'bg-blue-100 text-blue-700',
+            categorical: 'bg-purple-100 text-purple-700',
+            boolean:     'bg-green-100 text-green-700',
+            date:        'bg-orange-100 text-orange-700',
+            empty:       'bg-gray-100 text-gray-400',
+        };
+        return `<span class="text-xs font-medium px-2 py-0.5 rounded-full ${styles[type] || 'bg-gray-100 text-gray-400'}">${type}</span>`;
+    }
+
+    function statBox(label, value) {
+        return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
+    }
+
+    function renderAnalysis(filename, data, columns, types, stats, numCols, catCols, corr, insights) {
+        const typeCounts = {};
+        columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
+        const typeIcons  = { numeric: '🔢', categorical: '🔤', boolean: '✅', date: '📅', empty: '⬜' };
+        const pairHeight = Math.min(numCols.length, 8) * 160 + 40;
+        const corrHeight = Math.max(320, numCols.length * 44 + 120);
+
+        document.getElementById('app').innerHTML = `
+            <!-- Sticky header -->
+            <div class="sticky top-0 z-50 bg-[#0f0f0f]/95 backdrop-blur border-b border-white/10">
+                <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <button onclick="resetApp()" class="text-white/40 hover:text-white transition text-sm shrink-0">← Back</button>
+                        <span class="text-white font-semibold truncate">${filename}</span>
+                    </div>
+                    <div class="flex gap-4 text-sm text-white/50 shrink-0">
+                        <span><span class="text-white font-semibold">${data.length.toLocaleString()}</span> rows</span>
+                        <span><span class="text-white font-semibold">${columns.length}</span> cols</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="max-w-7xl mx-auto px-4 py-8 space-y-10">
+
+                <!-- Insights -->
+                ${insights.length ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">💡 Insights</h2>
+                    <div class="space-y-2">
+                        ${insights.map(i => `
+                            <div class="flex items-start gap-3 rounded-xl px-4 py-3 ${
+                                i.lvl === 'error' ? 'bg-red-950/50 border border-red-500/20' :
+                                i.lvl === 'warn'  ? 'bg-amber-950/50 border border-amber-500/20' :
+                                                    'bg-white/5 border border-white/10'
+                            }">
+                                <span class="shrink-0">${i.lvl === 'error' ? '🔴' : i.lvl === 'warn' ? '🟡' : '🔵'}</span>
+                                <span class="text-sm text-white/80">${i.msg}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </section>` : ''}
+
+                <!-- Overview -->
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">📋 Overview</h2>
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                        ${Object.entries(typeCounts).map(([type, count]) => `
+                            <div class="bg-white/5 border border-white/10 rounded-xl p-4">
+                                <div class="text-2xl font-bold text-white">${count}</div>
+                                <div class="text-sm text-white/50">${typeIcons[type] || ''} ${type}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div class="text-sm font-semibold text-gray-500 mb-3">Missing values per column</div>
+                        <div id="missing-chart" style="height:200px"></div>
+                    </div>
+                </section>
+
+                <!-- Column profiles -->
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🔍 Column Profiles</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        ${columns.map((col, idx) => `
+                            <div class="bg-white rounded-xl shadow-sm p-4">
+                                <div class="flex items-center justify-between mb-3">
+                                    <span class="font-semibold text-gray-800 truncate mr-2 text-sm" title="${col}">${col}</span>
+                                    ${typeBadge(types[col])}
+                                </div>
+                                <div id="col-chart-${idx}" style="height:150px"></div>
+                                <div class="grid grid-cols-3 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-gray-100">
+                                    ${types[col] === 'numeric' ? `
+                                        ${statBox('Mean',   fmtNum(stats[col].mean))}
+                                        ${statBox('Median', fmtNum(stats[col].median))}
+                                        ${statBox('Std',    fmtNum(stats[col].std))}
+                                        ${statBox('Min',    fmtNum(stats[col].min))}
+                                        ${statBox('Max',    fmtNum(stats[col].max))}
+                                        ${statBox('Nulls',  pct(stats[col].nullPct))}
+                                    ` : `
+                                        ${statBox('Unique', stats[col].unique.toLocaleString())}
+                                        ${statBox('Nulls',  pct(stats[col].nullPct))}
+                                        ${statBox('Total',  stats[col].total.toLocaleString())}
+                                    `}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </section>
+
+                <!-- Correlations -->
+                ${numCols.length >= 2 ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🔗 Correlation Heatmap</h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div id="corr-chart" style="height:${corrHeight}px"></div>
+                    </div>
+                </section>` : ''}
+
+                <!-- Pair plot -->
+                ${numCols.length >= 2 ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-1">⚡ Pair Plot</h2>
+                    ${numCols.length > 8 ? `<p class="text-white/40 text-sm mb-3">Showing first 8 numeric columns</p>` : `<p class="text-white/40 text-sm mb-3">${numCols.length} numeric columns</p>`}
+                    ${data.length > 5000 ? `<p class="text-white/30 text-xs mb-3">Sampled to 5,000 rows for performance</p>` : ''}
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div id="pair-plot" style="height:${pairHeight}px"></div>
+                    </div>
+                </section>` : ''}
+
+                <div class="pb-8"></div>
+            </div>
+        `;
+
+        // Render Plotly charts after DOM is set
+        const CFG = { displayModeBar: false, responsive: true };
+
+        setTimeout(() => {
+            // Missing values chart
+            const colsWithMissing = columns.filter(c => stats[c].nulls > 0);
+            const missingCols  = colsWithMissing.length ? colsWithMissing : columns.slice(0, 30);
+            const missingVals  = missingCols.map(c => stats[c].nullPct * 100);
+            Plotly.newPlot('missing-chart', [{
+                type: 'bar', orientation: 'h',
+                y: missingCols, x: missingVals,
+                marker: { color: missingVals.map(v => v > 50 ? '#ef4444' : v > 20 ? '#f59e0b' : '#6366f1') },
+                text: missingVals.map(v => v.toFixed(1) + '%'),
+                textposition: 'outside',
+            }], {
+                margin: { t: 5, r: 55, b: 20, l: 130 },
+                xaxis: { range: [0, 110], ticksuffix: '%', color: '#9ca3af', gridcolor: '#f3f4f6' },
+                yaxis: { color: '#374151', automargin: true },
+                paper_bgcolor: 'white', plot_bgcolor: 'white',
+                bargap: 0.35,
+                annotations: colsWithMissing.length === 0 ? [{
+                    text: '✓ No missing values', showarrow: false,
+                    font: { color: '#16a34a', size: 14 }, xref: 'paper', yref: 'paper', x: 0.5, y: 0.5
+                }] : [],
+            }, CFG);
+
+            // Column charts
+            columns.forEach((col, idx) => {
+                const el   = document.getElementById(`col-chart-${idx}`);
+                const stat = stats[col];
+                if (!el) return;
+
+                if (types[col] === 'numeric') {
+                    Plotly.newPlot(el, [{
+                        type: 'histogram', x: stat.nums,
+                        marker: { color: '#6366f1', opacity: 0.85 },
+                        nbinsx: 30,
+                    }], {
+                        margin: { t: 5, r: 5, b: 28, l: 40 },
+                        paper_bgcolor: 'white', plot_bgcolor: '#f9fafb',
+                        xaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
+                        yaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
+                        showlegend: false,
+                    }, CFG);
+                } else {
+                    const labels = stat.top.map(([v]) => v.length > 22 ? v.slice(0, 20) + '…' : v);
+                    const vals   = stat.top.map(([, n]) => n);
+                    Plotly.newPlot(el, [{
+                        type: 'bar', orientation: 'h',
+                        y: [...labels].reverse(), x: [...vals].reverse(),
+                        marker: { color: '#8b5cf6', opacity: 0.85 },
+                    }], {
+                        margin: { t: 5, r: 10, b: 28, l: 110 },
+                        paper_bgcolor: 'white', plot_bgcolor: '#f9fafb',
+                        xaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
+                        yaxis: { color: '#374151', automargin: true },
+                        showlegend: false,
+                    }, CFG);
+                }
+            });
+
+            // Correlation heatmap
+            if (numCols.length >= 2) {
+                const z    = numCols.map(r => numCols.map(c => corr[r][c]));
+                const text = z.map(row => row.map(v => v === null ? '' : v.toFixed(2)));
+                Plotly.newPlot('corr-chart', [{
+                    type: 'heatmap', z, x: numCols, y: numCols,
+                    colorscale: 'RdBu', reversescale: true, zmin: -1, zmax: 1,
+                    text, texttemplate: '%{text}',
+                    colorbar: { thickness: 14, len: 0.8 },
+                }], {
+                    margin: { t: 10, r: 80, b: 110, l: 110 },
+                    paper_bgcolor: 'white', plot_bgcolor: 'white',
+                    xaxis: { color: '#374151', tickangle: -40, automargin: true },
+                    yaxis: { color: '#374151', automargin: true },
+                }, CFG);
+
+                // Pair plot
+                const pairCols = numCols.slice(0, 8);
+                let rows = data;
+                if (data.length > 5000) {
+                    const step = Math.ceil(data.length / 5000);
+                    rows = data.filter((_, i) => i % step === 0);
+                }
+                Plotly.newPlot('pair-plot', [{
+                    type: 'splom',
+                    dimensions: pairCols.map(col => ({
+                        label: col,
+                        values: rows.map(r => +r[col]),
+                    })),
+                    showupperhalf: false,
+                    diagonal: { visible: true },
+                    marker: { size: 3, opacity: 0.4, color: '#6366f1' },
+                }], {
+                    margin: { t: 10, r: 10, b: 10, l: 10 },
+                    paper_bgcolor: 'white', plot_bgcolor: 'white',
+                }, CFG);
+            }
+        }, 0);
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    renderUpload();
+
+    </script>
+</body>
+</html>
