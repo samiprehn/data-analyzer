@@ -359,12 +359,14 @@
                                     <span class="font-semibold text-gray-800 truncate mr-2 text-sm" title="${col}">${col}</span>
                                     ${typeBadge(types[col])}
                                 </div>
-                                ${types[col] === 'numeric'
-                                    ? `<div id="col-hist-${idx}" style="height:130px"></div>
-                                       <div id="col-box-${idx}" style="height:80px"></div>`
-                                    : stats[col].unique <= 20
-                                        ? `<div id="col-chart-${idx}" style="height:150px"></div>`
-                                        : `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">${stats[col].unique.toLocaleString()} unique values</div>`
+                                ${stats[col].unique === stats[col].total - stats[col].nulls
+                                    ? `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">All unique values</div>`
+                                    : types[col] === 'numeric'
+                                        ? `<div id="col-hist-${idx}" style="height:130px"></div>
+                                           <div id="col-box-${idx}" style="height:80px"></div>`
+                                        : stats[col].unique <= 20
+                                            ? `<div id="col-chart-${idx}" style="height:150px"></div>`
+                                            : `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">${stats[col].unique.toLocaleString()} unique values</div>`
                                 }
                                 <div class="grid grid-cols-3 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-gray-100">
                                     ${types[col] === 'numeric' ? `
