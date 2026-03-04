@@ -69,6 +69,14 @@
         return dx === 0 || dy === 0 ? 0 : n / Math.sqrt(dx * dy);
     }
 
+    function toNum(val) {
+        if (val === null || val === undefined || val === '') return NaN;
+        const s = String(val).toLowerCase();
+        if (['true','yes','y','1'].includes(s)) return 1;
+        if (['false','no','n','0'].includes(s)) return 0;
+        return +val;
+    }
+
     // ── Type detection ────────────────────────────────────────────────────────
 
     function detectType(values) {
@@ -124,7 +132,7 @@
             mat[c1] = {};
             numCols.forEach(c2 => {
                 const pairs = data
-                    .map(r => [+r[c1], +r[c2]])
+                    .map(r => [toNum(r[c1]), toNum(r[c2])])
                     .filter(([a, b]) => !isNaN(a) && !isNaN(b));
                 mat[c1][c2] = pairs.length < 2 ? null
                     : pearson(pairs.map(p => p[0]), pairs.map(p => p[1]));
@@ -238,11 +246,12 @@
                 const data    = result.data;
                 const columns = result.meta.fields;
                 const { types, stats } = analyze(data, columns);
-                const numCols = columns.filter(c => types[c] === 'numeric');
-                const catCols = columns.filter(c => types[c] === 'categorical' || types[c] === 'boolean');
-                const corr    = numCols.length >= 2 ? corrMatrix(data, numCols) : {};
+                const numCols  = columns.filter(c => types[c] === 'numeric');
+                const plotCols = columns.filter(c => types[c] === 'numeric' || types[c] === 'boolean');
+                const catCols  = columns.filter(c => types[c] === 'categorical');
+                const corr     = plotCols.length >= 2 ? corrMatrix(data, plotCols) : {};
                 const insights = genInsights(columns, types, stats, corr, numCols);
-                renderAnalysis(file.name, data, columns, types, stats, numCols, catCols, corr, insights);
+                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights);
             },
             error: err => {
                 document.getElementById('app').innerHTML = `
@@ -269,12 +278,12 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
-    function renderAnalysis(filename, data, columns, types, stats, numCols, catCols, corr, insights) {
+    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights) {
         const typeCounts = {};
         columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
         const typeIcons  = { numeric: '🔢', categorical: '🔤', boolean: '✅', date: '📅', empty: '⬜' };
-        const pairHeight = Math.min(numCols.length, 8) * 160 + 40;
-        const corrHeight = Math.max(320, numCols.length * 44 + 120);
+        const pairHeight = Math.min(plotCols.length, 8) * 160 + 40;
+        const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         document.getElementById('app').innerHTML = `
             <!-- Sticky header -->
@@ -399,7 +408,7 @@
                 </section>
 
                 <!-- Correlations -->
-                ${numCols.length >= 2 ? `
+                ${plotCols.length >= 2 ? `
                 <section>
                     <h2 class="text-base font-semibold text-white mb-3">🔗 Correlation Heatmap</h2>
                     <div class="bg-white rounded-xl shadow-sm p-4">
@@ -408,10 +417,10 @@
                 </section>` : ''}
 
                 <!-- Pair plot -->
-                ${numCols.length >= 2 ? `
+                ${plotCols.length >= 2 ? `
                 <section>
                     <h2 class="text-base font-semibold text-white mb-1">⚡ Pair Plot</h2>
-                    ${numCols.length > 8 ? `<p class="text-white/40 text-sm mb-3">Showing first 8 numeric columns</p>` : `<p class="text-white/40 text-sm mb-3">${numCols.length} numeric columns</p>`}
+                    ${plotCols.length > 8 ? `<p class="text-white/40 text-sm mb-3">Showing first 8 numeric/boolean columns</p>` : `<p class="text-white/40 text-sm mb-3">${plotCols.length} numeric/boolean columns</p>`}
                     ${data.length > 5000 ? `<p class="text-white/30 text-xs mb-3">Sampled to 5,000 rows for performance</p>` : ''}
                     <div class="bg-white rounded-xl shadow-sm p-4">
                         <div id="pair-plot" style="height:${pairHeight}px"></div>
@@ -498,11 +507,11 @@
             });
 
             // Correlation heatmap
-            if (numCols.length >= 2) {
-                const z    = numCols.map(r => numCols.map(c => corr[r][c]));
+            if (plotCols.length >= 2) {
+                const z    = plotCols.map(r => plotCols.map(c => corr[r][c]));
                 const text = z.map(row => row.map(v => v === null ? '' : v.toFixed(2)));
                 Plotly.newPlot('corr-chart', [{
-                    type: 'heatmap', z, x: numCols, y: numCols,
+                    type: 'heatmap', z, x: plotCols, y: plotCols,
                     colorscale: 'RdBu', reversescale: true, zmin: -1, zmax: 1,
                     text, texttemplate: '%{text}',
                     colorbar: { thickness: 14, len: 0.8 },
@@ -514,7 +523,7 @@
                 }, CFG);
 
                 // Pair plot
-                const pairCols = numCols.slice(0, 8);
+                const pairCols = plotCols.slice(0, 8);
                 let rows = data;
                 if (data.length > 5000) {
                     const step = Math.ceil(data.length / 5000);
@@ -524,7 +533,7 @@
                     type: 'splom',
                     dimensions: pairCols.map(col => ({
                         label: col,
-                        values: rows.map(r => +r[col]),
+                        values: rows.map(r => toNum(r[col])),
                     })),
                     showupperhalf: false,
                     diagonal: { visible: true },
