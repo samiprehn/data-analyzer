@@ -328,7 +328,10 @@
                                     <span class="font-semibold text-gray-800 truncate mr-2 text-sm" title="${col}">${col}</span>
                                     ${typeBadge(types[col])}
                                 </div>
-                                <div id="col-chart-${idx}" style="height:150px"></div>
+                                ${types[col] === 'numeric' || stats[col].unique <= 20
+                                    ? `<div id="col-chart-${idx}" style="height:150px"></div>`
+                                    : `<div class="flex items-center justify-center text-xs text-gray-300 mb-1" style="height:40px">${stats[col].unique.toLocaleString()} unique values</div>`
+                                }
                                 <div class="grid grid-cols-3 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-gray-100">
                                     ${types[col] === 'numeric' ? `
                                         ${statBox('Mean',   fmtNum(stats[col].mean))}
@@ -416,18 +419,18 @@
                         yaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
                         showlegend: false,
                     }, CFG);
-                } else {
-                    const labels = stat.top.map(([v]) => v.length > 22 ? v.slice(0, 20) + '…' : v);
+                } else if (stat.unique <= 20) {
+                    const labels = stat.top.map(([v]) => v.length > 15 ? v.slice(0, 13) + '…' : v);
                     const vals   = stat.top.map(([, n]) => n);
                     Plotly.newPlot(el, [{
-                        type: 'bar', orientation: 'h',
-                        y: [...labels].reverse(), x: [...vals].reverse(),
+                        type: 'bar',
+                        x: labels, y: vals,
                         marker: { color: '#8b5cf6', opacity: 0.85 },
                     }], {
-                        margin: { t: 5, r: 10, b: 28, l: 110 },
+                        margin: { t: 5, r: 5, b: 50, l: 35 },
                         paper_bgcolor: 'white', plot_bgcolor: '#f9fafb',
-                        xaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
-                        yaxis: { color: '#374151', automargin: true },
+                        xaxis: { color: '#374151', tickangle: -35, automargin: true },
+                        yaxis: { color: '#9ca3af', gridcolor: '#f3f4f6' },
                         showlegend: false,
                     }, CFG);
                 }
