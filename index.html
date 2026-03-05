@@ -283,6 +283,74 @@
         return bestScore >= 3 ? best : null;
     }
 
+    function cramersV(x, y) {
+        const n = x.length;
+        if (n < 2) return 0;
+        const rowCats = [...new Set(x)], colCats = [...new Set(y)];
+        if (rowCats.length < 2 || colCats.length < 2) return 0;
+        const table = {};
+        rowCats.forEach(r => { table[r] = {}; colCats.forEach(c => table[r][c] = 0); });
+        for (let i = 0; i < n; i++) table[x[i]][y[i]]++;
+        const rowTotals = rowCats.map(r => colCats.reduce((s, c) => s + table[r][c], 0));
+        const colTotals = colCats.map(c => rowCats.reduce((s, r) => s + table[r][c], 0));
+        let chi2 = 0;
+        rowCats.forEach((r, ri) => colCats.forEach((c, ci) => {
+            const e = rowTotals[ri] * colTotals[ci] / n;
+            if (e > 0) chi2 += (table[r][c] - e) ** 2 / e;
+        }));
+        const k = Math.min(rowCats.length, colCats.length);
+        return Math.sqrt(chi2 / (n * (k - 1)));
+    }
+
+    function eta(numVals, catVals) {
+        const grandMean = mean(numVals);
+        const sst = numVals.reduce((s, v) => s + (v - grandMean) ** 2, 0);
+        if (sst === 0) return 0;
+        const cats = [...new Set(catVals)];
+        const ssb = cats.reduce((s, cat) => {
+            const g = numVals.filter((_, i) => catVals[i] === cat);
+            return s + g.length * (mean(g) - grandMean) ** 2;
+        }, 0);
+        return Math.sqrt(ssb / sst);
+    }
+
+    function featureImportance(data, columns, types, target) {
+        const tCol  = target.col;
+        const tStrs = data.map(r => String(r[tCol] ?? ''));
+        const tNums = data.map(r => toNum(r[tCol]));
+        const uniqueTargets = [...new Set(tStrs.filter(v => v !== ''))];
+        const isBinary = uniqueTargets.length === 2;
+        const tEnc  = isBinary ? tStrs.map(v => v === uniqueTargets[0] ? 0 : 1) : null;
+
+        return columns
+            .filter(c => c !== tCol && types[c] !== 'empty' && types[c] !== 'date')
+            .map(col => {
+                const type = types[col];
+                let score = 0, method = '';
+
+                if (type === 'numeric' || type === 'boolean') {
+                    const fNums = data.map(r => toNum(r[col]));
+                    if (target.taskType === 'regression') {
+                        const pairs = fNums.map((n, i) => [n, tNums[i]]).filter(([a, b]) => !isNaN(a) && !isNaN(b));
+                        if (pairs.length >= 2) { score = Math.abs(pearson(pairs.map(p => p[0]), pairs.map(p => p[1]))); method = '|r|'; }
+                    } else if (isBinary) {
+                        const pairs = fNums.map((n, i) => [n, tEnc[i]]).filter(([a]) => !isNaN(a));
+                        if (pairs.length >= 2) { score = Math.abs(pearson(pairs.map(p => p[0]), pairs.map(p => p[1]))); method = '|r|'; }
+                    } else {
+                        const valid = fNums.map((n, i) => [n, tStrs[i]]).filter(([n, t]) => !isNaN(n) && t !== '');
+                        if (valid.length >= 2) { score = eta(valid.map(p => p[0]), valid.map(p => p[1])); method = 'η'; }
+                    }
+                } else if (type === 'categorical') {
+                    const fStrs = data.map(r => String(r[col] ?? ''));
+                    const valid = fStrs.map((s, i) => [s, tStrs[i]]).filter(([a, b]) => a !== '' && b !== '');
+                    if (valid.length >= 2) { score = cramersV(valid.map(p => p[0]), valid.map(p => p[1])); method = 'V'; }
+                }
+                return { col, type, score, method };
+            })
+            .filter(f => f.score > 0)
+            .sort((a, b) => b.score - a.score);
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     function resetApp() { renderUpload(); }
@@ -399,6 +467,16 @@
         const pairHeight = Math.min(plotCols.length, 8) * 160 + 40;
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
+        const featureImp = target ? featureImportance(data, columns, types, target) : [];
+        const imbalance  = (() => {
+            if (!target || target.taskType !== 'classification') return null;
+            const st    = stats[target.col];
+            const total = st.total - st.nulls;
+            const top   = (st.top || []).map(([v, n]) => ({ v, n, pct: n / total }));
+            const max   = top[0]?.pct ?? 0;
+            return { top, maxPct: max, level: max > 0.9 ? 'severe' : max > 0.7 ? 'moderate' : 'balanced' };
+        })();
+
         document.getElementById('app').innerHTML = `
             <!-- Sticky header -->
             <div class="sticky top-0 z-50 bg-[#0f0f0f]/95 backdrop-blur border-b border-white/10">
@@ -454,7 +532,7 @@
                     <h2 class="text-base font-semibold text-white mb-3">🎯 Suggested ML Task</h2>
                     <div class="bg-white rounded-xl shadow-sm p-4 flex items-start gap-4">
                         <div class="text-3xl shrink-0">${target.taskType === 'classification' ? '🏷️' : '📈'}</div>
-                        <div class="min-w-0">
+                        <div class="min-w-0 flex-1">
                             <div class="flex items-center gap-2 flex-wrap mb-1">
                                 <span class="font-semibold text-gray-800">${target.taskType === 'classification' ? 'Classification' : 'Regression'}</span>
                                 ${target.subType ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full ${target.taskType === 'classification' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${target.subType}</span>` : ''}
@@ -462,6 +540,25 @@
                             </div>
                             <div class="text-sm text-gray-600">Predicted column: <span class="font-semibold text-gray-800">${target.col}</span></div>
                             <div class="text-xs text-gray-400 mt-0.5">${target.detail}</div>
+                            ${imbalance ? `
+                            <div class="mt-3 pt-3 border-t border-gray-100">
+                                <div class="flex h-2.5 rounded-full overflow-hidden gap-px mb-1.5">
+                                    ${imbalance.top.map((c, i) => {
+                                        const colors = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16'];
+                                        return `<div style="width:${c.pct*100}%;background:${colors[i%colors.length]}" title="${c.v}: ${(c.pct*100).toFixed(1)}%"></div>`;
+                                    }).join('')}
+                                </div>
+                                <div class="flex flex-wrap gap-x-3 gap-y-0.5">
+                                    ${imbalance.top.slice(0, 6).map((c, i) => {
+                                        const colors = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16'];
+                                        return `<span class="text-xs text-gray-500"><span style="color:${colors[i%colors.length]}">●</span> ${c.v} ${(c.pct*100).toFixed(1)}%</span>`;
+                                    }).join('')}
+                                </div>
+                                ${imbalance.level !== 'balanced' ? `
+                                <div class="text-xs mt-1.5 ${imbalance.level === 'severe' ? 'text-red-500' : 'text-amber-500'}">
+                                    ⚠ ${imbalance.level === 'severe' ? 'Severely' : 'Moderately'} imbalanced — majority class is ${(imbalance.maxPct*100).toFixed(1)}%
+                                </div>` : ''}
+                            </div>` : ''}
                         </div>
                     </div>
                 </section>` : ''}
@@ -559,6 +656,16 @@
                     <h2 class="text-base font-semibold text-white mb-3">🔗 Correlation Heatmap</h2>
                     <div class="bg-white rounded-xl shadow-sm p-4">
                         <div id="corr-chart" style="height:${corrHeight}px"></div>
+                    </div>
+                </section>` : ''}
+
+                <!-- Feature importance -->
+                ${featureImp.length ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">📊 Feature Importance <span class="text-white/30 font-normal text-sm">vs ${target.col}</span></h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div id="feat-imp-chart" style="height:${Math.max(180, featureImp.length * 28 + 70)}px"></div>
+                        <p class="text-xs text-gray-300 mt-1">|r| = Pearson correlation &nbsp;·&nbsp; η = correlation ratio &nbsp;·&nbsp; V = Cramér's V</p>
                     </div>
                 </section>` : ''}
 
@@ -687,6 +794,27 @@
                 }], {
                     margin: { t: 10, r: 10, b: 10, l: 10 },
                     paper_bgcolor: 'white', plot_bgcolor: 'white',
+                }, CFG);
+            }
+
+            // Feature importance
+            if (featureImp.length) {
+                const typeColors = { numeric: '#6366f1', boolean: '#10b981', categorical: '#8b5cf6' };
+                Plotly.newPlot('feat-imp-chart', [{
+                    type: 'bar', orientation: 'h',
+                    y: featureImp.map(f => f.col),
+                    x: featureImp.map(f => f.score),
+                    marker: { color: featureImp.map(f => typeColors[f.type] || '#9ca3af') },
+                    text: featureImp.map(f => `${f.score.toFixed(3)} <span style="color:#9ca3af">${f.method}</span>`),
+                    textposition: 'outside',
+                    customdata: featureImp.map(f => f.method),
+                    hovertemplate: '%{y}: %{x:.3f} (%{customdata})<extra></extra>',
+                }], {
+                    margin: { t: 5, r: 80, b: 30, l: 130 },
+                    xaxis: { range: [0, 1.15], color: '#9ca3af', gridcolor: '#f3f4f6' },
+                    yaxis: { color: '#374151', autorange: 'reversed', automargin: true },
+                    paper_bgcolor: 'white', plot_bgcolor: 'white',
+                    bargap: 0.35,
                 }, CFG);
             }
         }, 0);
