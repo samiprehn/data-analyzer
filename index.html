@@ -394,6 +394,16 @@
         });
     }
 
+    function detectDuplicates(data, columns) {
+        const counts = new Map();
+        data.forEach(row => {
+            const key = columns.map(c => String(row[c] ?? '')).join('\x00');
+            counts.set(key, (counts.get(key) || 0) + 1);
+        });
+        const extra = [...counts.values()].filter(n => n > 1).reduce((s, n) => s + n - 1, 0);
+        return { extra, pct: extra / data.length };
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     function resetApp() { renderUpload(); }
@@ -510,6 +520,7 @@
         const pairHeight = Math.min(plotCols.length, 8) * 160 + 40;
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
+        const dups          = detectDuplicates(data, columns);
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
         const featureImpNum = featureImp.filter(f => f.type === 'numeric');
         const featureImpCat = featureImp.filter(f => f.type === 'categorical' || f.type === 'boolean');
@@ -555,10 +566,15 @@
                 </div>` : ''}
 
                 <!-- Insights -->
-                ${insights.length ? `
+                ${insights.length || dups.extra > 0 ? `
                 <section>
                     <h2 class="text-base font-semibold text-white mb-3">💡 Insights</h2>
                     <div class="space-y-2">
+                        ${dups.extra > 0 ? `
+                            <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
+                                <span class="shrink-0">🟡</span>
+                                <span class="text-sm text-white/80"><b>${dups.extra.toLocaleString()}</b> duplicate rows (${pct(dups.pct)}) — can be removed with <code>drop_duplicates()</code></span>
+                            </div>` : ''}
                         ${insights.map(i => `
                             <div class="flex items-start gap-3 rounded-xl px-4 py-3 ${
                                 i.lvl === 'error' ? 'bg-red-950/50 border border-red-500/20' :
@@ -619,6 +635,10 @@
                                 <div class="text-sm text-white/50">${typeIcons[type] || ''} ${type}</div>
                             </div>
                         `).join('')}
+                        <div class="bg-white/5 border ${dups.extra > 0 ? 'border-amber-500/30' : 'border-white/10'} rounded-xl p-4">
+                            <div class="text-2xl font-bold ${dups.extra > 0 ? 'text-amber-400' : 'text-white'}">${dups.extra.toLocaleString()}</div>
+                            <div class="text-sm ${dups.extra > 0 ? 'text-amber-400/70' : 'text-white/50'}">⧉ duplicate rows</div>
+                        </div>
                     </div>
                     <div class="bg-white rounded-xl shadow-sm p-4">
                         <div class="text-sm font-semibold text-gray-500 mb-3">Missing values per column</div>
