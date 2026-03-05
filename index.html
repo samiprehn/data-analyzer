@@ -353,6 +353,47 @@
             .sort((a, b) => b.score - a.score);
     }
 
+    function encodeAbility(columns, types, stats, target) {
+        return columns.map(col => {
+            const type    = types[col];
+            const stat    = stats[col];
+            const nonNull = stat.total - stat.nulls;
+            const allUniq = stat.unique === nonNull && nonNull > 20;
+            const isTarget = target && col === target.col;
+            const nullNote = stat.nulls > 0 ? `impute ${stat.nulls.toLocaleString()} missing` : '';
+
+            let action, note, level;
+
+            if (type === 'empty') {
+                action = 'Drop'; note = 'No data'; level = 'drop';
+            } else if (type === 'numeric' && allUniq) {
+                action = 'Drop'; note = `All unique — likely ID${nullNote ? ' · ' + nullNote : ''}`; level = 'drop';
+            } else if (type === 'numeric') {
+                action = 'Ready'; note = nullNote; level = 'ready';
+            } else if (type === 'boolean') {
+                action = 'Map to 0 / 1'; note = nullNote; level = 'encode';
+            } else if (type === 'date') {
+                action = 'Extract features'; note = `Year, month, day, weekday${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
+            } else if (type === 'categorical') {
+                if (allUniq) {
+                    action = 'Drop'; note = `All unique — likely ID${nullNote ? ' · ' + nullNote : ''}`; level = 'drop';
+                } else if (isTarget) {
+                    action = stat.unique === 2 ? 'Label encode' : 'Label encode';
+                    note = `Target · ${stat.unique} classes${nullNote ? ' · ' + nullNote : ''}`;
+                    level = 'encode';
+                } else if (stat.unique === 2) {
+                    action = 'Label encode'; note = `2 categories → 1 col${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
+                } else if (stat.unique <= 20) {
+                    action = 'One-hot encode'; note = `${stat.unique} categories → ${stat.unique} cols${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
+                } else {
+                    action = 'High cardinality'; note = `${stat.unique} unique — target encode or drop${nullNote ? ' · ' + nullNote : ''}`; level = 'warn';
+                }
+            }
+
+            return { col, type, action, note, level, isTarget };
+        });
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     function resetApp() { renderUpload(); }
@@ -469,7 +510,8 @@
         const pairHeight = Math.min(plotCols.length, 8) * 160 + 40;
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
-        const featureImp = target ? featureImportance(data, columns, types, stats, target) : [];
+        const featureImp  = target ? featureImportance(data, columns, types, stats, target) : [];
+        const encSummary  = encodeAbility(columns, types, stats, target);
         const imbalance  = (() => {
             if (!target || target.taskType !== 'classification') return null;
             const st    = stats[target.col];
@@ -670,6 +712,55 @@
                         <p class="text-xs text-gray-300 mt-1">Numeric/boolean: |r| Pearson or η correlation ratio &nbsp;·&nbsp; Categorical (≤20 values): V Cramér's V &nbsp;·&nbsp; Methods are not directly comparable across types</p>
                     </div>
                 </section>` : ''}
+
+                <!-- Encode-ability summary -->
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">📦 Encode-ability Summary</h2>
+                    ${(() => {
+                        const counts = { ready: 0, encode: 0, warn: 0, drop: 0 };
+                        encSummary.forEach(r => counts[r.level]++);
+                        const badges = [
+                            counts.ready  ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">${counts.ready} ready</span>` : '',
+                            counts.encode ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">${counts.encode} need encoding</span>` : '',
+                            counts.warn   ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">${counts.warn} high cardinality</span>` : '',
+                            counts.drop   ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700">${counts.drop} to drop</span>` : '',
+                        ].filter(Boolean).join('');
+                        return `<div class="flex flex-wrap gap-2 mb-3">${badges}</div>`;
+                    })()}
+                    <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                        <table class="text-sm w-full">
+                            <thead>
+                                <tr class="border-b border-gray-100">
+                                    <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2">Column</th>
+                                    <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2">Type</th>
+                                    <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2">Action</th>
+                                    <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2 hidden sm:table-cell">Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${encSummary.map((row, i) => {
+                                    const actionStyle = {
+                                        ready:  'bg-green-50 text-green-700',
+                                        encode: 'bg-blue-50 text-blue-700',
+                                        warn:   'bg-yellow-50 text-yellow-700',
+                                        drop:   'bg-red-50 text-red-600',
+                                    }[row.level];
+                                    return `
+                                    <tr class="${i % 2 === 0 ? '' : 'bg-gray-50'} border-b border-gray-50 last:border-0">
+                                        <td class="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">
+                                            ${row.col}${row.isTarget ? ' <span class="text-xs text-purple-500">(target)</span>' : ''}
+                                        </td>
+                                        <td class="px-3 py-2">${typeBadge(row.type)}</td>
+                                        <td class="px-3 py-2 whitespace-nowrap">
+                                            <span class="text-xs font-medium px-2 py-0.5 rounded-full ${actionStyle}">${row.action}</span>
+                                        </td>
+                                        <td class="px-3 py-2 text-xs text-gray-400 hidden sm:table-cell">${row.note || '—'}</td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
 
                 <!-- Pair plot -->
                 ${plotCols.length >= 2 ? `
