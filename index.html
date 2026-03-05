@@ -510,7 +510,9 @@
         const pairHeight = Math.min(plotCols.length, 8) * 160 + 40;
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
-        const featureImp  = target ? featureImportance(data, columns, types, stats, target) : [];
+        const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
+        const featureImpNum = featureImp.filter(f => f.type === 'numeric' || f.type === 'boolean');
+        const featureImpCat = featureImp.filter(f => f.type === 'categorical');
         const encSummary  = encodeAbility(columns, types, stats, target);
         const imbalance  = (() => {
             if (!target || target.taskType !== 'classification') return null;
@@ -707,9 +709,19 @@
                 ${featureImp.length ? `
                 <section>
                     <h2 class="text-base font-semibold text-white mb-3">📊 Feature Importance <span class="text-white/30 font-normal text-sm">vs ${target.col}</span></h2>
-                    <div class="bg-white rounded-xl shadow-sm p-4">
-                        <div id="feat-imp-chart" style="height:${Math.max(180, featureImp.length * 28 + 70)}px"></div>
-                        <p class="text-xs text-gray-300 mt-1">Numeric/boolean: |r| Pearson or η correlation ratio &nbsp;·&nbsp; Categorical (≤20 values): V Cramér's V &nbsp;·&nbsp; Methods are not directly comparable across types</p>
+                    <div class="grid grid-cols-1 ${featureImpNum.length && featureImpCat.length ? 'md:grid-cols-2' : ''} gap-4">
+                        ${featureImpNum.length ? `
+                        <div class="bg-white rounded-xl shadow-sm p-4">
+                            <div class="text-sm font-semibold text-gray-600 mb-1">Numeric &amp; Boolean</div>
+                            <div class="text-xs text-gray-400 mb-2">|r| Pearson correlation or η correlation ratio</div>
+                            <div id="feat-imp-num" style="height:${Math.max(160, featureImpNum.length * 28 + 60)}px"></div>
+                        </div>` : ''}
+                        ${featureImpCat.length ? `
+                        <div class="bg-white rounded-xl shadow-sm p-4">
+                            <div class="text-sm font-semibold text-gray-600 mb-1">Categorical</div>
+                            <div class="text-xs text-gray-400 mb-2">V Cramér's V (columns with ≤20 unique values)</div>
+                            <div id="feat-imp-cat" style="height:${Math.max(160, featureImpCat.length * 28 + 60)}px"></div>
+                        </div>` : ''}
                     </div>
                 </section>` : ''}
 
@@ -891,24 +903,36 @@
             }
 
             // Feature importance
-            if (featureImp.length) {
-                const typeColors = { numeric: '#6366f1', boolean: '#10b981', categorical: '#8b5cf6' };
-                Plotly.newPlot('feat-imp-chart', [{
+            const impLayout = {
+                margin: { t: 5, r: 70, b: 30, l: 120 },
+                xaxis: { range: [0, 1.15], color: '#9ca3af', gridcolor: '#f3f4f6' },
+                yaxis: { color: '#374151', autorange: 'reversed', automargin: true },
+                paper_bgcolor: 'white', plot_bgcolor: 'white',
+                bargap: 0.35,
+            };
+            if (featureImpNum.length) {
+                Plotly.newPlot('feat-imp-num', [{
                     type: 'bar', orientation: 'h',
-                    y: featureImp.map(f => f.col),
-                    x: featureImp.map(f => f.score),
-                    marker: { color: featureImp.map(f => typeColors[f.type] || '#9ca3af') },
-                    text: featureImp.map(f => `${f.score.toFixed(3)} <span style="color:#9ca3af">${f.method}</span>`),
+                    y: featureImpNum.map(f => f.col),
+                    x: featureImpNum.map(f => f.score),
+                    marker: { color: featureImpNum.map(f => f.type === 'boolean' ? '#10b981' : '#6366f1') },
+                    text: featureImpNum.map(f => f.score.toFixed(3)),
                     textposition: 'outside',
-                    customdata: featureImp.map(f => f.method),
+                    customdata: featureImpNum.map(f => f.method),
                     hovertemplate: '%{y}: %{x:.3f} (%{customdata})<extra></extra>',
-                }], {
-                    margin: { t: 5, r: 80, b: 30, l: 130 },
-                    xaxis: { range: [0, 1.15], color: '#9ca3af', gridcolor: '#f3f4f6' },
-                    yaxis: { color: '#374151', autorange: 'reversed', automargin: true },
-                    paper_bgcolor: 'white', plot_bgcolor: 'white',
-                    bargap: 0.35,
-                }, CFG);
+                }], impLayout, CFG);
+            }
+            if (featureImpCat.length) {
+                Plotly.newPlot('feat-imp-cat', [{
+                    type: 'bar', orientation: 'h',
+                    y: featureImpCat.map(f => f.col),
+                    x: featureImpCat.map(f => f.score),
+                    marker: { color: '#8b5cf6' },
+                    text: featureImpCat.map(f => f.score.toFixed(3)),
+                    textposition: 'outside',
+                    customdata: featureImpCat.map(f => f.method),
+                    hovertemplate: '%{y}: %{x:.3f} (%{customdata})<extra></extra>',
+                }], impLayout, CFG);
             }
         }, 0);
     }
