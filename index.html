@@ -378,11 +378,11 @@
                 if (allUniq) {
                     action = 'Drop'; note = `All unique — likely ID${nullNote ? ' · ' + nullNote : ''}`; level = 'drop';
                 } else if (isTarget) {
-                    action = stat.unique === 2 ? 'Label encode' : 'Label encode';
+                    action = stat.unique === 2 ? 'Map to 0 / 1' : 'Label encode';
                     note = `Target · ${stat.unique} classes${nullNote ? ' · ' + nullNote : ''}`;
                     level = 'encode';
                 } else if (stat.unique === 2) {
-                    action = 'Label encode'; note = `2 categories → 1 col${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
+                    action = 'Map to 0 / 1'; note = `2 categories → 1 col${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
                 } else if (stat.unique <= 20) {
                     action = 'One-hot encode'; note = `${stat.unique} categories → ${stat.unique} cols${nullNote ? ' · ' + nullNote : ''}`; level = 'encode';
                 } else {
