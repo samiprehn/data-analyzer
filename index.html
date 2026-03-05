@@ -488,101 +488,133 @@
         return v < 0.1 ? 'small' : v < 0.3 ? 'medium' : 'large';
     }
 
-    function runHypothesisTests(data, columns, types, stats) {
-        const eligible = columns.filter(col =>
-            types[col] !== 'empty' && stats[col].nullPct <= 0.5 && stats[col].unique > 1
+    function runHypothesisTests(data, columns, types, stats, target) {
+        if (!target) return null;
+        const tCol  = target.col;
+        const tType = target.taskType; // 'classification' or 'regression'
+
+        const features = columns.filter(col =>
+            col !== tCol &&
+            types[col] !== 'empty' &&
+            stats[col].nullPct <= 0.5 &&
+            stats[col].unique > 1
         );
-        const numCols = eligible.filter(c => types[c] === 'numeric' && stats[c].unique > 2);
-        const catCols = eligible.filter(c =>
-            types[c] === 'categorical' || types[c] === 'boolean' ||
-            (types[c] === 'numeric' && stats[c].unique === 2)
-        );
+
         const results = [];
 
-        // Numeric × Categorical/Binary
-        numCols.forEach(numCol => {
-            catCols.forEach(catCol => {
-                const groups = {};
-                data.forEach(row => {
-                    const catVal = String(row[catCol] ?? '');
-                    const numVal = toNum(row[numCol]);
-                    if (catVal === '' || isNaN(numVal)) return;
-                    if (!groups[catVal]) groups[catVal] = [];
-                    groups[catVal].push(numVal);
-                });
-                const groupKeys   = Object.keys(groups);
-                const groupArrays = groupKeys.map(k => groups[k]);
-                if (groupArrays.some(g => g.length < 2)) return;
-                if (groupKeys.length === 2) {
-                    const res = welchTTest(groupArrays[0], groupArrays[1]);
-                    if (!res) return;
-                    const eff = effectSizeLabel('d', res.cohensD);
-                    results.push({
-                        varA: numCol, varB: catCol, testName: 'Welch t-test', n: res.n,
-                        statLabel: `t=${fmtNum(res.t, 3)}`, p: res.p,
-                        effectSize: `d=${fmtNum(Math.abs(res.cohensD), 3)} ${eff}`,
-                        keyResult: `${groupKeys[0]}: ${fmtNum(res.meanA, 2)} vs ${groupKeys[1]}: ${fmtNum(res.meanB, 2)}`,
-                        ci95: res.ci95,
+        features.forEach(col => {
+            const fType = types[col];
+            const isNumericFeature = fType === 'numeric';
+            const isCatFeature     = fType === 'categorical' || fType === 'boolean' ||
+                                     (fType === 'numeric' && stats[col].unique === 2);
+
+            if (tType === 'classification') {
+                // Target is categorical — split numeric features by target groups
+                if (isNumericFeature && stats[col].unique > 2) {
+                    const groups = {};
+                    data.forEach(row => {
+                        const tVal = String(row[tCol] ?? '');
+                        const fVal = toNum(row[col]);
+                        if (tVal === '' || isNaN(fVal)) return;
+                        if (!groups[tVal]) groups[tVal] = [];
+                        groups[tVal].push(fVal);
                     });
-                } else if (groupKeys.length <= 8) {
-                    const res = anova1way(groupArrays);
+                    const groupKeys   = Object.keys(groups);
+                    const groupArrays = groupKeys.map(k => groups[k]);
+                    if (groupArrays.some(g => g.length < 2)) return;
+                    if (groupKeys.length === 2) {
+                        const res = welchTTest(groupArrays[0], groupArrays[1]);
+                        if (!res) return;
+                        const eff = effectSizeLabel('d', res.cohensD);
+                        results.push({
+                            varA: col, varB: tCol, testName: 'Welch t-test', n: res.n,
+                            statLabel: `t=${fmtNum(res.t, 3)}`, p: res.p,
+                            effectSize: `d=${fmtNum(Math.abs(res.cohensD), 3)} ${eff}`,
+                            keyResult: `${groupKeys[0]}: ${fmtNum(res.meanA, 2)} vs ${groupKeys[1]}: ${fmtNum(res.meanB, 2)}`,
+                        });
+                    } else if (groupKeys.length <= 8) {
+                        const res = anova1way(groupArrays);
+                        if (!res) return;
+                        const eff = effectSizeLabel('eta2', res.etaSq);
+                        results.push({
+                            varA: col, varB: tCol, testName: 'One-way ANOVA', n: res.n,
+                            statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
+                            effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
+                            keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
+                        });
+                    }
+                } else if (isCatFeature && stats[col].unique <= 20) {
+                    // Categorical feature vs categorical target → chi-squared
+                    const xVals = [], yVals = [];
+                    data.forEach(row => {
+                        const a = String(row[col] ?? ''), b = String(row[tCol] ?? '');
+                        if (a && b) { xVals.push(a); yVals.push(b); }
+                    });
+                    const res = chiSqTest(xVals, yVals);
                     if (!res) return;
-                    const eff = effectSizeLabel('eta2', res.etaSq);
+                    const eff = effectSizeLabel('V', res.cramersV);
                     results.push({
-                        varA: numCol, varB: catCol, testName: 'One-way ANOVA', n: res.n,
-                        statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
-                        effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
-                        keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
-                        ci95: null,
+                        varA: col, varB: tCol, testName: 'Chi-squared', n: res.n,
+                        statLabel: `χ²=${fmtNum(res.chi2, 3)}`, p: res.p,
+                        effectSize: `V=${fmtNum(res.cramersV, 3)} ${eff}`,
+                        keyResult: `df=${res.df}, ${res.r}×${res.c} table`,
                     });
                 }
-            });
+            } else if (tType === 'regression') {
+                // Target is numeric
+                if (isNumericFeature && stats[col].unique > 2) {
+                    // Numeric feature vs numeric target → Pearson r
+                    const xVals = [], yVals = [];
+                    data.forEach(row => {
+                        const a = toNum(row[col]), b = toNum(row[tCol]);
+                        if (!isNaN(a) && !isNaN(b)) { xVals.push(a); yVals.push(b); }
+                    });
+                    const res = pearsonTest(xVals, yVals);
+                    if (!res) return;
+                    const eff = effectSizeLabel('r', res.r);
+                    results.push({
+                        varA: col, varB: tCol, testName: 'Pearson r', n: res.n,
+                        statLabel: `r=${fmtNum(res.r, 3)}`, p: res.p,
+                        effectSize: `r=${fmtNum(Math.abs(res.r), 3)} ${eff}`,
+                        keyResult: `95% CI [${fmtNum(res.ci95[0], 3)}, ${fmtNum(res.ci95[1], 3)}]`,
+                    });
+                } else if (isCatFeature) {
+                    // Categorical feature vs numeric target → split target by feature groups
+                    const groups = {};
+                    data.forEach(row => {
+                        const fVal = String(row[col] ?? '');
+                        const tVal = toNum(row[tCol]);
+                        if (fVal === '' || isNaN(tVal)) return;
+                        if (!groups[fVal]) groups[fVal] = [];
+                        groups[fVal].push(tVal);
+                    });
+                    const groupKeys   = Object.keys(groups);
+                    const groupArrays = groupKeys.map(k => groups[k]);
+                    if (groupArrays.some(g => g.length < 2)) return;
+                    if (groupKeys.length === 2) {
+                        const res = welchTTest(groupArrays[0], groupArrays[1]);
+                        if (!res) return;
+                        const eff = effectSizeLabel('d', res.cohensD);
+                        results.push({
+                            varA: col, varB: tCol, testName: 'Welch t-test', n: res.n,
+                            statLabel: `t=${fmtNum(res.t, 3)}`, p: res.p,
+                            effectSize: `d=${fmtNum(Math.abs(res.cohensD), 3)} ${eff}`,
+                            keyResult: `${groupKeys[0]}: ${fmtNum(res.meanA, 2)} vs ${groupKeys[1]}: ${fmtNum(res.meanB, 2)}`,
+                        });
+                    } else if (groupKeys.length <= 8) {
+                        const res = anova1way(groupArrays);
+                        if (!res) return;
+                        const eff = effectSizeLabel('eta2', res.etaSq);
+                        results.push({
+                            varA: col, varB: tCol, testName: 'One-way ANOVA', n: res.n,
+                            statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
+                            effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
+                            keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
+                        });
+                    }
+                }
+            }
         });
-
-        // Categorical × Categorical
-        for (let i = 0; i < catCols.length; i++) {
-            for (let j = i + 1; j < catCols.length; j++) {
-                const colA = catCols[i], colB = catCols[j];
-                if (stats[colA].unique > 20 || stats[colB].unique > 20) continue;
-                const xVals = [], yVals = [];
-                data.forEach(row => {
-                    const a = String(row[colA] ?? ''), b = String(row[colB] ?? '');
-                    if (a && b) { xVals.push(a); yVals.push(b); }
-                });
-                const res = chiSqTest(xVals, yVals);
-                if (!res) continue;
-                const eff = effectSizeLabel('V', res.cramersV);
-                results.push({
-                    varA: colA, varB: colB, testName: 'Chi-squared', n: res.n,
-                    statLabel: `χ²=${fmtNum(res.chi2, 3)}`, p: res.p,
-                    effectSize: `V=${fmtNum(res.cramersV, 3)} ${eff}`,
-                    keyResult: `df=${res.df}, ${res.r}×${res.c} table`,
-                    ci95: null,
-                });
-            }
-        }
-
-        // Numeric × Numeric
-        for (let i = 0; i < numCols.length; i++) {
-            for (let j = i + 1; j < numCols.length; j++) {
-                const colA = numCols[i], colB = numCols[j];
-                const xVals = [], yVals = [];
-                data.forEach(row => {
-                    const a = toNum(row[colA]), b = toNum(row[colB]);
-                    if (!isNaN(a) && !isNaN(b)) { xVals.push(a); yVals.push(b); }
-                });
-                const res = pearsonTest(xVals, yVals);
-                if (!res) continue;
-                const eff = effectSizeLabel('r', res.r);
-                results.push({
-                    varA: colA, varB: colB, testName: 'Pearson r', n: res.n,
-                    statLabel: `r=${fmtNum(res.r, 3)}`, p: res.p,
-                    effectSize: `r=${fmtNum(Math.abs(res.r), 3)} ${eff}`,
-                    keyResult: `95% CI [${fmtNum(res.ci95[0], 3)}, ${fmtNum(res.ci95[1], 3)}]`,
-                    ci95: res.ci95,
-                });
-            }
-        }
 
         // Bonferroni correction
         const totalTests = results.length;
@@ -942,7 +974,7 @@
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         const dups          = detectDuplicates(data, columns);
-        const hypTests      = columns.length >= 2 ? runHypothesisTests(data, columns, types, stats) : null;
+        const hypTests      = target ? runHypothesisTests(data, columns, types, stats, target) : null;
         const scaling       = numCols.length ? recommendScaling(columns, types, stats) : null;
         const clustering    = clusteringReadiness(columns, types, stats);
         const pca           = plotCols.length >= 2 ? pcaVarianceHint(plotCols, corr) : null;
