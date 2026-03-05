@@ -404,6 +404,31 @@
         return { extra, pct: extra / data.length };
     }
 
+    function recommendSplit(data, target, stats) {
+        const n = data.length;
+        if (!target) return null;
+        if (n < 200) return { kfold: true, folds: 5, n };
+
+        const trainRatio = n < 1000 ? 0.70 : 0.80;
+        const note       = n < 1000 ? '70 / 30' : '80 / 20';
+        const trainN     = Math.round(n * trainRatio);
+        const testN      = n - trainN;
+
+        let classes = null, tinyClasses = [];
+        if (target.taskType === 'classification') {
+            const st    = stats[target.col];
+            const total = st.total - st.nulls;
+            classes = (st.top || []).map(([v, count]) => {
+                const testCount  = Math.round(count * (1 - trainRatio));
+                const trainCount = count - testCount;
+                return { v, count, trainCount, testCount, pct: count / total };
+            });
+            tinyClasses = classes.filter(c => c.testCount < 5);
+        }
+
+        return { kfold: false, note, trainRatio, trainN, testN, n, stratify: target.taskType === 'classification', classes, tinyClasses };
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     function resetApp() { renderUpload(); }
@@ -521,6 +546,7 @@
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         const dups          = detectDuplicates(data, columns);
+        const splitRec      = recommendSplit(data, target, stats);
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
         const featureImpNum = featureImp.filter(f => f.type === 'numeric');
         const featureImpCat = featureImp.filter(f => f.type === 'categorical' || f.type === 'boolean');
@@ -793,6 +819,67 @@
                         </table>
                     </div>
                 </section>
+
+                <!-- Train / Test Split -->
+                ${splitRec ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">✂️ Train / Test Split</h2>
+                    ${splitRec.kfold ? `
+                    <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
+                        <span class="shrink-0">🟡</span>
+                        <span class="text-sm text-white/80">Only ${splitRec.n} rows — consider <b>5-fold cross-validation</b> instead of a holdout set for more reliable evaluation</span>
+                    </div>` : `
+                    <div class="bg-white rounded-xl shadow-sm p-4 space-y-4">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Recommended split</div>
+                                <div class="text-xl font-bold text-gray-800">${splitRec.note}</div>
+                            </div>
+                            <div class="flex gap-4">
+                                <div class="text-center">
+                                    <div class="text-lg font-bold text-indigo-600">${splitRec.trainN.toLocaleString()}</div>
+                                    <div class="text-xs text-gray-400">train rows</div>
+                                </div>
+                                <div class="text-center">
+                                    <div class="text-lg font-bold text-purple-600">${splitRec.testN.toLocaleString()}</div>
+                                    <div class="text-xs text-gray-400">test rows</div>
+                                </div>
+                            </div>
+                            ${splitRec.stratify ? `<span class="text-xs font-medium px-2 py-1 rounded-full bg-green-100 text-green-700">✓ Use stratified split</span>` : ''}
+                        </div>
+                        ${splitRec.classes && splitRec.classes.length <= 10 ? `
+                        <div>
+                            <div class="text-xs font-semibold text-gray-400 mb-2">Class distribution in split (${target.col})</div>
+                            <table class="text-sm w-full">
+                                <thead>
+                                    <tr class="border-b border-gray-100">
+                                        <th class="text-left text-xs font-semibold text-gray-400 py-1 pr-3">Class</th>
+                                        <th class="text-right text-xs font-semibold text-gray-400 py-1 px-3">Total</th>
+                                        <th class="text-right text-xs font-semibold text-indigo-400 py-1 px-3">Train</th>
+                                        <th class="text-right text-xs font-semibold text-purple-400 py-1 px-3">Test</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${splitRec.classes.map((c, i) => `
+                                    <tr class="${i % 2 === 0 ? '' : 'bg-gray-50'} border-b border-gray-50 last:border-0">
+                                        <td class="py-1.5 pr-3 text-gray-700 font-medium">${c.v}</td>
+                                        <td class="py-1.5 px-3 text-right text-gray-500">${c.count.toLocaleString()}</td>
+                                        <td class="py-1.5 px-3 text-right text-indigo-600">${c.trainCount.toLocaleString()}</td>
+                                        <td class="py-1.5 px-3 text-right text-purple-600">${c.testCount.toLocaleString()}</td>
+                                    </tr>`).join('')}
+                                </tbody>
+                            </table>
+                        </div>` : ''}
+                        ${splitRec.tinyClasses.length ? `
+                        <div class="space-y-1">
+                            ${splitRec.tinyClasses.map(c => `
+                            <div class="flex items-start gap-2 text-xs text-amber-600">
+                                <span>⚠</span>
+                                <span>Class "${c.v}" would have only ${c.testCount} sample${c.testCount === 1 ? '' : 's'} in test — too few for reliable evaluation</span>
+                            </div>`).join('')}
+                        </div>` : ''}
+                    </div>`}
+                </section>` : ''}
 
                 <!-- Pair plot -->
                 ${plotCols.length >= 2 ? `
