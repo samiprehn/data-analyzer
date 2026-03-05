@@ -77,6 +77,34 @@
         return +val;
     }
 
+    // ── Header detection ─────────────────────────────────────────────────────
+
+    function detectHeader(rows) {
+        if (rows.length < 2) return true;
+        const firstRow = rows[0];
+        const sample   = rows.slice(1, Math.min(11, rows.length));
+        const dateRx   = /^\d{4}-\d{2}-\d{2}$|^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/;
+        const boolSet  = new Set(['true','false','yes','no','y','n','0','1']);
+
+        for (let i = 0; i < firstRow.length; i++) {
+            const first = String(firstRow[i] ?? '').trim();
+            const isNum  = first !== '' && !isNaN(+first);
+            const isBool = boolSet.has(first.toLowerCase());
+            const isDate = dateRx.test(first);
+            if (!(isNum || isBool || isDate)) continue;
+
+            const rest = sample.map(r => String(r[i] ?? '').trim()).filter(v => v !== '');
+            if (!rest.length) continue;
+            const matches = rest.filter(v =>
+                (isNum  && !isNaN(+v)) ||
+                (isBool && boolSet.has(v.toLowerCase())) ||
+                (isDate && dateRx.test(v))
+            ).length;
+            if (matches / rest.length > 0.7) return false;
+        }
+        return true;
+    }
+
     // ── Type detection ────────────────────────────────────────────────────────
 
     function detectType(values) {
@@ -239,19 +267,30 @@
             </div>
         `;
         Papa.parse(file, {
-            header: true,
+            header: false,
             skipEmptyLines: true,
             dynamicTyping: false,
             complete: result => {
-                const data    = result.data;
-                const columns = result.meta.fields;
+                const rows = result.data;
+                if (!rows.length) return;
+
+                const hasHeader = detectHeader(rows);
+                let columns, data;
+                if (hasHeader) {
+                    columns = rows[0].map(String);
+                    data = rows.slice(1).map(row => Object.fromEntries(columns.map((col, i) => [col, row[i] ?? ''])));
+                } else {
+                    columns = Array.from({ length: rows[0].length }, (_, i) => `Column ${i + 1}`);
+                    data = rows.map(row => Object.fromEntries(columns.map((col, i) => [col, row[i] ?? ''])));
+                }
+
                 const { types, stats } = analyze(data, columns);
                 const numCols  = columns.filter(c => types[c] === 'numeric');
                 const plotCols = columns.filter(c => types[c] === 'numeric' || types[c] === 'boolean');
                 const catCols  = columns.filter(c => types[c] === 'categorical');
                 const corr     = plotCols.length >= 2 ? corrMatrix(data, plotCols) : {};
                 const insights = genInsights(columns, types, stats, corr, numCols);
-                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights);
+                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader);
             },
             error: err => {
                 document.getElementById('app').innerHTML = `
@@ -278,7 +317,7 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
-    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights) {
+    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader) {
         const typeCounts = {};
         columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
         const typeIcons  = { numeric: '🔢', categorical: '🔤', boolean: '✅', date: '📅', empty: '⬜' };
@@ -301,6 +340,13 @@
             </div>
 
             <div class="max-w-7xl mx-auto px-4 py-8 space-y-10">
+
+                <!-- No-header notice -->
+                ${!hasHeader ? `
+                <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
+                    <span class="shrink-0">🟡</span>
+                    <span class="text-sm text-white/80">No header row detected — columns have been assigned generic names (Column 1, Column 2, …)</span>
+                </div>` : ''}
 
                 <!-- Insights -->
                 ${insights.length ? `
