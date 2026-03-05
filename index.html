@@ -750,6 +750,14 @@
                     <div class="bg-white rounded-xl shadow-sm p-4">
                         <div id="corr-chart" style="height:${corrHeight}px"></div>
                     </div>
+                </section>
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-1">⚡ Pair Plot</h2>
+                    ${plotCols.length > 8 ? `<p class="text-white/40 text-sm mb-3">Showing first 8 numeric/boolean columns</p>` : `<p class="text-white/40 text-sm mb-3">${plotCols.length} numeric/boolean columns</p>`}
+                    ${data.length > 5000 ? `<p class="text-white/30 text-xs mb-3">Sampled to 5,000 rows for performance</p>` : ''}
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div id="pair-plot" style="height:${pairHeight}px"></div>
+                    </div>
                 </section>` : ''}
 
                 <!-- Feature importance -->
@@ -881,17 +889,6 @@
                             </div>`).join('')}
                         </div>` : ''}
                     </div>`}
-                </section>` : ''}
-
-                <!-- Pair plot -->
-                ${plotCols.length >= 2 ? `
-                <section>
-                    <h2 class="text-base font-semibold text-white mb-1">⚡ Pair Plot</h2>
-                    ${plotCols.length > 8 ? `<p class="text-white/40 text-sm mb-3">Showing first 8 numeric/boolean columns</p>` : `<p class="text-white/40 text-sm mb-3">${plotCols.length} numeric/boolean columns</p>`}
-                    ${data.length > 5000 ? `<p class="text-white/30 text-xs mb-3">Sampled to 5,000 rows for performance</p>` : ''}
-                    <div class="bg-white rounded-xl shadow-sm p-4">
-                        <div id="pair-plot" style="height:${pairHeight}px"></div>
-                    </div>
                 </section>` : ''}
 
                 <div class="pb-8"></div>
