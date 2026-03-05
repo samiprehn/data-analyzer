@@ -328,7 +328,7 @@
                 const type = types[col];
                 let score = 0, method = '';
 
-                if (type === 'numeric' || type === 'boolean') {
+                if (type === 'numeric') {
                     const fNums = data.map(r => toNum(r[col]));
                     if (target.taskType === 'regression') {
                         const pairs = fNums.map((n, i) => [n, tNums[i]]).filter(([a, b]) => !isNaN(a) && !isNaN(b));
@@ -340,7 +340,7 @@
                         const valid = fNums.map((n, i) => [n, tStrs[i]]).filter(([n, t]) => !isNaN(n) && t !== '');
                         if (valid.length >= 2) { score = eta(valid.map(p => p[0]), valid.map(p => p[1])); method = 'η'; }
                     }
-                } else if (type === 'categorical') {
+                } else if (type === 'categorical' || type === 'boolean') {
                     const st = stats ? stats[col] : null;
                     if (st && st.unique > 20) { return { col, type, score: 0, method: '' }; }
                     const fStrs = data.map(r => String(r[col] ?? ''));
@@ -719,7 +719,7 @@
                         ${featureImpCat.length ? `
                         <div class="bg-white rounded-xl shadow-sm p-4">
                             <div class="text-sm font-semibold text-gray-600 mb-1">Categorical &amp; Boolean</div>
-                            <div class="text-xs text-gray-400 mb-2">V Cramér's V (columns with ≤20 unique values)</div>
+                            <div class="text-xs text-gray-400 mb-2">V Cramér's V</div>
                             <div id="feat-imp-cat" style="height:${Math.max(160, featureImpCat.length * 28 + 60)}px"></div>
                         </div>` : ''}
                     </div>
