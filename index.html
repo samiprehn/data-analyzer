@@ -314,6 +314,289 @@
         return Math.sqrt(ssb / sst);
     }
 
+    // ── Statistical significance ───────────────────────────────────────────────
+
+    function _lnGamma(z) {
+        const g = 7;
+        const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+                   771.32342877765313, -176.61502916214059, 12.507343278686905,
+                   -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+        if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - _lnGamma(1 - z);
+        z -= 1;
+        let x = c[0];
+        for (let i = 1; i < g + 2; i++) x += c[i] / (z + i);
+        const t = z + g + 0.5;
+        return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+    }
+
+    function regularizedIncompleteGamma(a, x) {
+        if (x < 0 || a <= 0) return 0;
+        if (x === 0) return 0;
+        const logP0 = a * Math.log(x) - x - _lnGamma(a);
+        if (x < a + 1) {
+            let sum = 1 / a, term = 1 / a, an = a;
+            for (let n = 0; n < 200; n++) {
+                an += 1; term *= x / an; sum += term;
+                if (Math.abs(term) < Math.abs(sum) * 1e-15) break;
+            }
+            return Math.min(1, Math.exp(logP0) * sum);
+        } else {
+            const FPMIN = 1e-300;
+            let b = x + 1 - a, c = 1 / FPMIN, d = 1 / b, h = d;
+            for (let i = 1; i <= 200; i++) {
+                const an = -i * (i - a);
+                b += 2;
+                d = an * d + b; if (Math.abs(d) < FPMIN) d = FPMIN;
+                c = b + an / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+                d = 1 / d;
+                const del = d * c; h *= del;
+                if (Math.abs(del - 1) < 1e-15) break;
+            }
+            return Math.max(0, Math.min(1, 1 - Math.exp(logP0) * h));
+        }
+    }
+
+    function regularizedIncompleteBeta(a, b, x) {
+        if (x <= 0) return 0;
+        if (x >= 1) return 1;
+        const lbt = a * Math.log(x) + b * Math.log(1 - x) - (_lnGamma(a) + _lnGamma(b) - _lnGamma(a + b));
+        const bt  = Math.exp(lbt);
+        function betaCF(a, b, x) {
+            const FPMIN = 1e-300;
+            const qab = a + b, qap = a + 1, qam = a - 1;
+            let c = 1, d = 1 - qab * x / qap;
+            if (Math.abs(d) < FPMIN) d = FPMIN;
+            d = 1 / d; let h = d;
+            for (let m = 1; m <= 200; m++) {
+                const m2 = 2 * m;
+                let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+                d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+                c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+                d = 1 / d; h *= d * c;
+                aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+                d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+                c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+                d = 1 / d;
+                const del = d * c; h *= del;
+                if (Math.abs(del - 1) < 1e-15) break;
+            }
+            return h;
+        }
+        if (x < (a + 1) / (a + b + 2)) return bt * betaCF(a, b, x) / a;
+        return 1 - bt * betaCF(b, a, 1 - x) / b;
+    }
+
+    function tDistCDF(t, df) {
+        if (!isFinite(t) || !isFinite(df) || df <= 0) return NaN;
+        const x = df / (df + t * t);
+        return regularizedIncompleteBeta(df / 2, 0.5, x);
+    }
+
+    function chiSqPValue(chi2, df) {
+        if (chi2 <= 0) return 1;
+        if (!isFinite(chi2) || df <= 0) return NaN;
+        return Math.max(0, 1 - regularizedIncompleteGamma(df / 2, chi2 / 2));
+    }
+
+    function fDistPValue(F, df1, df2) {
+        if (F <= 0) return 1;
+        if (!isFinite(F)) return 0;
+        return regularizedIncompleteBeta(df2 / 2, df1 / 2, df2 / (df2 + df1 * F));
+    }
+
+    function tCritical(alpha, df) {
+        let lo = 0, hi = 100;
+        for (let i = 0; i < 60; i++) {
+            const mid = (lo + hi) / 2;
+            if (tDistCDF(mid, df) > alpha) hi = mid; else lo = mid;
+        }
+        return (lo + hi) / 2;
+    }
+
+    function welchTTest(a, b) {
+        const nA = a.length, nB = b.length;
+        if (nA < 2 || nB < 2) return null;
+        const mA = mean(a), mB = mean(b);
+        const varA = a.reduce((s, x) => s + (x - mA) ** 2, 0) / (nA - 1);
+        const varB = b.reduce((s, x) => s + (x - mB) ** 2, 0) / (nB - 1);
+        const seA = varA / nA, seB = varB / nB;
+        const seDiff = Math.sqrt(seA + seB);
+        if (seDiff === 0) return null;
+        const t  = (mA - mB) / seDiff;
+        const df = (seA + seB) ** 2 / (seA ** 2 / (nA - 1) + seB ** 2 / (nB - 1));
+        const p  = tDistCDF(t, df);
+        const pooledStd = Math.sqrt((varA * (nA - 1) + varB * (nB - 1)) / (nA + nB - 2));
+        const cohensD   = pooledStd > 0 ? (mA - mB) / pooledStd : 0;
+        const tCrit = tCritical(0.05, df);
+        return { t, df, p, meanA: mA, meanB: mB, cohensD, ci95: [(mA - mB) - tCrit * seDiff, (mA - mB) + tCrit * seDiff], n: nA + nB };
+    }
+
+    function anova1way(groups) {
+        const grps = groups.filter(g => g.length >= 2);
+        if (grps.length < 2) return null;
+        const k = grps.length;
+        const allVals = grps.flat();
+        const N = allVals.length;
+        if (N < k + 1) return null;
+        const grandMean  = mean(allVals);
+        const groupMeans = grps.map(g => mean(g));
+        const ssBetween  = grps.reduce((s, g, i) => s + g.length * (groupMeans[i] - grandMean) ** 2, 0);
+        const ssWithin   = grps.reduce((s, g, i) => s + g.reduce((gs, x) => gs + (x - groupMeans[i]) ** 2, 0), 0);
+        const df1 = k - 1, df2 = N - k;
+        if (ssWithin === 0 || df2 <= 0) return null;
+        const F = (ssBetween / df1) / (ssWithin / df2);
+        const ssTotal = ssBetween + ssWithin;
+        return { F, df1, df2, p: fDistPValue(F, df1, df2), etaSq: ssTotal > 0 ? ssBetween / ssTotal : 0, n: N, groupMeans, k };
+    }
+
+    function chiSqTest(x, y) {
+        const n = x.length;
+        if (n < 5) return null;
+        const rowCats = [...new Set(x)], colCats = [...new Set(y)];
+        if (rowCats.length < 2 || colCats.length < 2) return null;
+        const table = {};
+        rowCats.forEach(r => { table[r] = {}; colCats.forEach(c => table[r][c] = 0); });
+        for (let i = 0; i < n; i++) table[x[i]][y[i]]++;
+        const rowTotals = rowCats.map(r => colCats.reduce((s, c) => s + table[r][c], 0));
+        const colTotals = colCats.map(c => rowCats.reduce((s, r) => s + table[r][c], 0));
+        let chi2 = 0;
+        rowCats.forEach((r, ri) => colCats.forEach((c, ci) => {
+            const e = rowTotals[ri] * colTotals[ci] / n;
+            if (e > 0) chi2 += (table[r][c] - e) ** 2 / e;
+        }));
+        const df = (rowCats.length - 1) * (colCats.length - 1);
+        const k  = Math.min(rowCats.length, colCats.length);
+        return { chi2, df, p: chiSqPValue(chi2, df), cramersV: Math.sqrt(chi2 / (n * (k - 1))), n, r: rowCats.length, c: colCats.length };
+    }
+
+    function pearsonTest(x, y) {
+        const n = x.length;
+        if (n < 4) return null;
+        const r = pearson(x, y);
+        if (Math.abs(r) >= 1) return null;
+        const t  = r * Math.sqrt(n - 2) / Math.sqrt(1 - r * r);
+        const df = n - 2;
+        const z  = 0.5 * Math.log((1 + r) / (1 - r));
+        const se = 1 / Math.sqrt(n - 3);
+        return { r, t, df, p: tDistCDF(t, df), ci95: [Math.tanh(z - 1.96 * se), Math.tanh(z + 1.96 * se)], n };
+    }
+
+    function effectSizeLabel(type, value) {
+        const v = Math.abs(value);
+        if (type === 'd')    return v < 0.2 ? 'small' : v < 0.5 ? 'medium' : 'large';
+        if (type === 'eta2') return v < 0.01 ? 'small' : v < 0.06 ? 'medium' : 'large';
+        return v < 0.1 ? 'small' : v < 0.3 ? 'medium' : 'large';
+    }
+
+    function runHypothesisTests(data, columns, types, stats) {
+        const eligible = columns.filter(col =>
+            types[col] !== 'empty' && stats[col].nullPct <= 0.5 && stats[col].unique > 1
+        );
+        const numCols = eligible.filter(c => types[c] === 'numeric' && stats[c].unique > 2);
+        const catCols = eligible.filter(c =>
+            types[c] === 'categorical' || types[c] === 'boolean' ||
+            (types[c] === 'numeric' && stats[c].unique === 2)
+        );
+        const results = [];
+
+        // Numeric × Categorical/Binary
+        numCols.forEach(numCol => {
+            catCols.forEach(catCol => {
+                const groups = {};
+                data.forEach(row => {
+                    const catVal = String(row[catCol] ?? '');
+                    const numVal = toNum(row[numCol]);
+                    if (catVal === '' || isNaN(numVal)) return;
+                    if (!groups[catVal]) groups[catVal] = [];
+                    groups[catVal].push(numVal);
+                });
+                const groupKeys   = Object.keys(groups);
+                const groupArrays = groupKeys.map(k => groups[k]);
+                if (groupArrays.some(g => g.length < 2)) return;
+                if (groupKeys.length === 2) {
+                    const res = welchTTest(groupArrays[0], groupArrays[1]);
+                    if (!res) return;
+                    const eff = effectSizeLabel('d', res.cohensD);
+                    results.push({
+                        varA: numCol, varB: catCol, testName: 'Welch t-test', n: res.n,
+                        statLabel: `t=${fmtNum(res.t, 3)}`, p: res.p,
+                        effectSize: `d=${fmtNum(Math.abs(res.cohensD), 3)} ${eff}`,
+                        keyResult: `${groupKeys[0]}: ${fmtNum(res.meanA, 2)} vs ${groupKeys[1]}: ${fmtNum(res.meanB, 2)}`,
+                        ci95: res.ci95,
+                    });
+                } else if (groupKeys.length <= 8) {
+                    const res = anova1way(groupArrays);
+                    if (!res) return;
+                    const eff = effectSizeLabel('eta2', res.etaSq);
+                    results.push({
+                        varA: numCol, varB: catCol, testName: 'One-way ANOVA', n: res.n,
+                        statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
+                        effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
+                        keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
+                        ci95: null,
+                    });
+                }
+            });
+        });
+
+        // Categorical × Categorical
+        for (let i = 0; i < catCols.length; i++) {
+            for (let j = i + 1; j < catCols.length; j++) {
+                const colA = catCols[i], colB = catCols[j];
+                if (stats[colA].unique > 20 || stats[colB].unique > 20) continue;
+                const xVals = [], yVals = [];
+                data.forEach(row => {
+                    const a = String(row[colA] ?? ''), b = String(row[colB] ?? '');
+                    if (a && b) { xVals.push(a); yVals.push(b); }
+                });
+                const res = chiSqTest(xVals, yVals);
+                if (!res) continue;
+                const eff = effectSizeLabel('V', res.cramersV);
+                results.push({
+                    varA: colA, varB: colB, testName: 'Chi-squared', n: res.n,
+                    statLabel: `χ²=${fmtNum(res.chi2, 3)}`, p: res.p,
+                    effectSize: `V=${fmtNum(res.cramersV, 3)} ${eff}`,
+                    keyResult: `df=${res.df}, ${res.r}×${res.c} table`,
+                    ci95: null,
+                });
+            }
+        }
+
+        // Numeric × Numeric
+        for (let i = 0; i < numCols.length; i++) {
+            for (let j = i + 1; j < numCols.length; j++) {
+                const colA = numCols[i], colB = numCols[j];
+                const xVals = [], yVals = [];
+                data.forEach(row => {
+                    const a = toNum(row[colA]), b = toNum(row[colB]);
+                    if (!isNaN(a) && !isNaN(b)) { xVals.push(a); yVals.push(b); }
+                });
+                const res = pearsonTest(xVals, yVals);
+                if (!res) continue;
+                const eff = effectSizeLabel('r', res.r);
+                results.push({
+                    varA: colA, varB: colB, testName: 'Pearson r', n: res.n,
+                    statLabel: `r=${fmtNum(res.r, 3)}`, p: res.p,
+                    effectSize: `r=${fmtNum(Math.abs(res.r), 3)} ${eff}`,
+                    keyResult: `95% CI [${fmtNum(res.ci95[0], 3)}, ${fmtNum(res.ci95[1], 3)}]`,
+                    ci95: res.ci95,
+                });
+            }
+        }
+
+        // Bonferroni correction
+        const totalTests = results.length;
+        results.forEach(r => { r.pAdj = Math.min(r.p * totalTests, 1); });
+
+        // Sort: significant first, then by pAdj
+        results.sort((a, b) => {
+            const aSig = a.pAdj < 0.05 ? 0 : 1, bSig = b.pAdj < 0.05 ? 0 : 1;
+            return aSig !== bSig ? aSig - bSig : a.pAdj - b.pAdj;
+        });
+
+        return { results, totalTests };
+    }
+
     function featureImportance(data, columns, types, stats, target) {
         const tCol  = target.col;
         const tStrs = data.map(r => String(r[tCol] ?? ''));
@@ -659,6 +942,7 @@
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         const dups          = detectDuplicates(data, columns);
+        const hypTests      = columns.length >= 2 ? runHypothesisTests(data, columns, types, stats) : null;
         const scaling       = numCols.length ? recommendScaling(columns, types, stats) : null;
         const clustering    = clusteringReadiness(columns, types, stats);
         const pca           = plotCols.length >= 2 ? pcaVarianceHint(plotCols, corr) : null;
@@ -872,6 +1156,61 @@
                     ${data.length > 5000 ? `<p class="text-white/30 text-xs mb-3">Sampled to 5,000 rows for performance</p>` : ''}
                     <div class="bg-white rounded-xl shadow-sm p-4">
                         <div id="pair-plot" style="height:${pairHeight}px"></div>
+                    </div>
+                </section>` : ''}
+
+                <!-- Hypothesis Tests -->
+                ${(hypTests && hypTests.results.length > 0) ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🔬 Hypothesis Tests</h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4">
+                        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+                            <div class="text-xs text-gray-400">
+                                ${hypTests.totalTests} test${hypTests.totalTests !== 1 ? 's' : ''} · p-values Bonferroni-corrected (×${hypTests.totalTests})
+                            </div>
+                            ${data.length < 30 ? `<div class="text-xs text-amber-600">⚠ n=${data.length} — interpret with caution (small sample)</div>` : ''}
+                        </div>
+                        <div class="overflow-auto">
+                            <table class="text-sm w-full min-w-[700px]">
+                                <thead>
+                                    <tr class="border-b border-gray-100">
+                                        <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2 whitespace-nowrap">Variables</th>
+                                        <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2">Test</th>
+                                        <th class="text-right text-xs font-semibold text-gray-400 px-3 py-2">n</th>
+                                        <th class="text-right text-xs font-semibold text-gray-400 px-3 py-2">Statistic</th>
+                                        <th class="text-right text-xs font-semibold text-gray-400 px-3 py-2">p (raw)</th>
+                                        <th class="text-right text-xs font-semibold text-gray-400 px-3 py-2">p (adj.)</th>
+                                        <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2">Effect Size</th>
+                                        <th class="text-left text-xs font-semibold text-gray-400 px-3 py-2 hidden md:table-cell">Key Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${hypTests.results.map((r, i) => {
+                                        const sig      = r.pAdj < 0.05;
+                                        const rowBg    = sig ? (i % 2 === 0 ? 'bg-green-50' : 'bg-green-50/60') : (i % 2 === 0 ? '' : 'bg-gray-50');
+                                        const pRawCls  = r.p < 0.05 ? 'text-red-600 font-semibold' : r.p < 0.1 ? 'text-amber-600' : 'text-gray-400';
+                                        const pAdjCls  = sig ? 'text-green-700 font-semibold' : 'text-gray-400';
+                                        const fmtP     = p => p < 0.0001 ? '<0.0001' : p.toFixed(4);
+                                        return `
+                                        <tr class="${rowBg} border-b border-gray-50 last:border-0">
+                                            <td class="px-3 py-2 font-medium text-gray-800 whitespace-nowrap">${r.varA} <span class="text-gray-400 font-normal">vs</span> ${r.varB}</td>
+                                            <td class="px-3 py-2 text-gray-500 whitespace-nowrap">${r.testName}</td>
+                                            <td class="px-3 py-2 text-right text-gray-500">${r.n.toLocaleString()}</td>
+                                            <td class="px-3 py-2 text-right font-mono text-gray-700">${r.statLabel}</td>
+                                            <td class="px-3 py-2 text-right font-mono ${pRawCls}">${fmtP(r.p)}</td>
+                                            <td class="px-3 py-2 text-right font-mono ${pAdjCls}">${fmtP(r.pAdj)}</td>
+                                            <td class="px-3 py-2 text-gray-700 whitespace-nowrap">${r.effectSize}</td>
+                                            <td class="px-3 py-2 text-xs text-gray-400 hidden md:table-cell">${r.keyResult}</td>
+                                        </tr>`;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                        ${(() => {
+                            const tested    = new Set(hypTests.results.flatMap(r => [r.varA, r.varB]));
+                            const skewed    = [...tested].filter(c => types[c] === 'numeric' && stats[c] && Math.abs(stats[c].skewness) > 2);
+                            return skewed.length ? `<div class="mt-3 text-xs text-amber-600">⚠ Highly skewed variables (${skewed.join(', ')}) — consider non-parametric tests.</div>` : '';
+                        })()}
                     </div>
                 </section>` : ''}
 
