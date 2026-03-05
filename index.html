@@ -228,6 +228,61 @@
         return out;
     }
 
+    function detectTarget(columns, types, stats) {
+        if (columns.length < 2) return null;
+
+        const classNames = ['target','label','class','y','output','outcome','result','response',
+            'survived','churn','default','fraud','diagnosis','species','category','type',
+            'status','flag','indicator','decision','pass','fail','passed','failed','approved'];
+        const regNames   = ['price','score','value','amount','salary','cost','revenue','sales',
+            'income','rate','total','sum','quantity','age','duration','weight','height',
+            'temperature','rating','fare','tip','charges','bmi','loss','error','wage','rent'];
+
+        let best = null, bestScore = 0;
+
+        columns.forEach((col, idx) => {
+            const type = types[col];
+            const stat = stats[col];
+            if (type === 'empty' || type === 'date') return;
+            if (stat.nullPct > 0.5) return;
+
+            const name = col.toLowerCase().replace(/[\s_\-]/g, '');
+            let score = 0, taskType = null;
+
+            if (classNames.some(k => name === k || name.endsWith(k) || name.startsWith(k)))
+                { score += 5; taskType = 'classification'; }
+            else if (regNames.some(k => name === k || name.endsWith(k) || name.startsWith(k)))
+                { score += 5; taskType = 'regression'; }
+
+            if (type === 'boolean')
+                { score += 3; taskType = taskType || 'classification'; }
+            else if (type === 'categorical' && stat.unique <= 2)
+                { score += 3; taskType = taskType || 'classification'; }
+            else if (type === 'categorical' && stat.unique <= 10)
+                { score += 2; taskType = taskType || 'classification'; }
+            else if (type === 'numeric')
+                { score += 1; taskType = taskType || 'regression'; }
+
+            if (idx === columns.length - 1) score += 2;
+
+            if (score > bestScore && taskType) {
+                bestScore = score;
+                let detail = '', subType = null;
+                if (taskType === 'classification') {
+                    subType  = stat.unique === 2 ? 'Binary' : `${stat.unique}-class`;
+                    const cls = (stat.top || []).slice(0, 5).map(([v]) => `"${v}"`).join(', ');
+                    detail = `${stat.unique} classes: ${cls}`;
+                } else {
+                    detail = `Range: ${fmtNum(stat.min)} – ${fmtNum(stat.max)}`;
+                }
+                const confidence = score >= 7 ? 'high' : score >= 5 ? 'moderate' : 'low';
+                best = { col, taskType, subType, detail, confidence };
+            }
+        });
+
+        return bestScore >= 3 ? best : null;
+    }
+
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     function resetApp() { renderUpload(); }
@@ -309,7 +364,8 @@
                 const catCols  = columns.filter(c => types[c] === 'categorical');
                 const corr     = plotCols.length >= 2 ? corrMatrix(data, plotCols) : {};
                 const insights = genInsights(columns, types, stats, corr, numCols);
-                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex);
+                const target   = detectTarget(columns, types, stats);
+                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex, target);
             },
             error: err => {
                 document.getElementById('app').innerHTML = `
@@ -336,7 +392,7 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
-    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex) {
+    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex, target) {
         const typeCounts = {};
         columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
         const typeIcons  = { numeric: '🔢', categorical: '🔤', boolean: '✅', date: '📅', empty: '⬜' };
@@ -389,6 +445,24 @@
                                 <span class="text-sm text-white/80">${i.msg}</span>
                             </div>
                         `).join('')}
+                    </div>
+                </section>` : ''}
+
+                <!-- Suggested ML task -->
+                ${target ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🎯 Suggested ML Task</h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4 flex items-start gap-4">
+                        <div class="text-3xl shrink-0">${target.taskType === 'classification' ? '🏷️' : '📈'}</div>
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2 flex-wrap mb-1">
+                                <span class="font-semibold text-gray-800">${target.taskType === 'classification' ? 'Classification' : 'Regression'}</span>
+                                ${target.subType ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full ${target.taskType === 'classification' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${target.subType}</span>` : ''}
+                                <span class="text-xs font-medium px-2 py-0.5 rounded-full ${target.confidence === 'high' ? 'bg-green-100 text-green-700' : target.confidence === 'moderate' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-400'}">${target.confidence} confidence</span>
+                            </div>
+                            <div class="text-sm text-gray-600">Predicted column: <span class="font-semibold text-gray-800">${target.col}</span></div>
+                            <div class="text-xs text-gray-400 mt-0.5">${target.detail}</div>
+                        </div>
                     </div>
                 </section>` : ''}
 
