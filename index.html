@@ -1188,7 +1188,7 @@
                                     ${hypTests.results.map((r, i) => {
                                         const sig      = r.pAdj < 0.05;
                                         const rowBg    = sig ? (i % 2 === 0 ? 'bg-green-50' : 'bg-green-50/60') : (i % 2 === 0 ? '' : 'bg-gray-50');
-                                        const pRawCls  = r.p < 0.05 ? 'text-red-600 font-semibold' : r.p < 0.1 ? 'text-amber-600' : 'text-gray-400';
+
                                         const pAdjCls  = sig ? 'text-green-700 font-semibold' : 'text-gray-400';
                                         const fmtP     = p => p < 0.0001 ? '<0.0001' : p.toFixed(4);
                                         return `
@@ -1197,7 +1197,7 @@
                                             <td class="px-3 py-2 text-gray-500 whitespace-nowrap">${r.testName}</td>
                                             <td class="px-3 py-2 text-right text-gray-500">${r.n.toLocaleString()}</td>
                                             <td class="px-3 py-2 text-right font-mono text-gray-700">${r.statLabel}</td>
-                                            <td class="px-3 py-2 text-right font-mono ${pRawCls}">${fmtP(r.p)}</td>
+                                            <td class="px-3 py-2 text-right font-mono text-gray-500">${fmtP(r.p)}</td>
                                             <td class="px-3 py-2 text-right font-mono ${pAdjCls}">${fmtP(r.pAdj)}</td>
                                             <td class="px-3 py-2 text-gray-700 whitespace-nowrap">${r.effectSize}</td>
                                             <td class="px-3 py-2 text-xs text-gray-400 hidden md:table-cell">${r.keyResult}</td>
