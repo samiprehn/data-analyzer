@@ -511,8 +511,8 @@
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
-        const featureImpNum = featureImp.filter(f => f.type === 'numeric' || f.type === 'boolean');
-        const featureImpCat = featureImp.filter(f => f.type === 'categorical');
+        const featureImpNum = featureImp.filter(f => f.type === 'numeric');
+        const featureImpCat = featureImp.filter(f => f.type === 'categorical' || f.type === 'boolean');
         const encSummary  = encodeAbility(columns, types, stats, target);
         const imbalance  = (() => {
             if (!target || target.taskType !== 'classification') return null;
@@ -712,13 +712,13 @@
                     <div class="grid grid-cols-1 ${featureImpNum.length && featureImpCat.length ? 'md:grid-cols-2' : ''} gap-4">
                         ${featureImpNum.length ? `
                         <div class="bg-white rounded-xl shadow-sm p-4">
-                            <div class="text-sm font-semibold text-gray-600 mb-1">Numeric &amp; Boolean</div>
+                            <div class="text-sm font-semibold text-gray-600 mb-1">Numeric</div>
                             <div class="text-xs text-gray-400 mb-2">|r| Pearson correlation or η correlation ratio</div>
                             <div id="feat-imp-num" style="height:${Math.max(160, featureImpNum.length * 28 + 60)}px"></div>
                         </div>` : ''}
                         ${featureImpCat.length ? `
                         <div class="bg-white rounded-xl shadow-sm p-4">
-                            <div class="text-sm font-semibold text-gray-600 mb-1">Categorical</div>
+                            <div class="text-sm font-semibold text-gray-600 mb-1">Categorical &amp; Boolean</div>
                             <div class="text-xs text-gray-400 mb-2">V Cramér's V (columns with ≤20 unique values)</div>
                             <div id="feat-imp-cat" style="height:${Math.max(160, featureImpCat.length * 28 + 60)}px"></div>
                         </div>` : ''}
@@ -915,7 +915,7 @@
                     type: 'bar', orientation: 'h',
                     y: featureImpNum.map(f => f.col),
                     x: featureImpNum.map(f => f.score),
-                    marker: { color: featureImpNum.map(f => f.type === 'boolean' ? '#10b981' : '#6366f1') },
+                    marker: { color: '#6366f1' },
                     text: featureImpNum.map(f => f.score.toFixed(3)),
                     textposition: 'outside',
                     customdata: featureImpNum.map(f => f.method),
@@ -927,7 +927,7 @@
                     type: 'bar', orientation: 'h',
                     y: featureImpCat.map(f => f.col),
                     x: featureImpCat.map(f => f.score),
-                    marker: { color: '#8b5cf6' },
+                    marker: { color: featureImpCat.map(f => f.type === 'boolean' ? '#10b981' : '#8b5cf6') },
                     text: featureImpCat.map(f => f.score.toFixed(3)),
                     textposition: 'outside',
                     customdata: featureImpCat.map(f => f.method),
