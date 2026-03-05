@@ -105,6 +105,17 @@
         return true;
     }
 
+    function detectIndexColumn(columns, data) {
+        if (!columns.length || !data.length) return false;
+        const col  = columns[0];
+        const vals = data.map(r => r[col]);
+        if (!vals.every(v => v !== '' && !isNaN(+v) && Number.isInteger(+v))) return false;
+        const nums  = vals.map(Number);
+        const start = nums[0];
+        if (start !== 0 && start !== 1) return false;
+        return nums.every((n, i) => n === start + i);
+    }
+
     // ── Type detection ────────────────────────────────────────────────────────
 
     function detectType(values) {
@@ -284,13 +295,21 @@
                     data = rows.map(row => Object.fromEntries(columns.map((col, i) => [col, row[i] ?? ''])));
                 }
 
+                let droppedIndex = false;
+                if (detectIndexColumn(columns, data)) {
+                    const idxCol = columns[0];
+                    data    = data.map(row => { const r = { ...row }; delete r[idxCol]; return r; });
+                    columns = columns.slice(1);
+                    droppedIndex = true;
+                }
+
                 const { types, stats } = analyze(data, columns);
                 const numCols  = columns.filter(c => types[c] === 'numeric');
                 const plotCols = columns.filter(c => types[c] === 'numeric' || types[c] === 'boolean');
                 const catCols  = columns.filter(c => types[c] === 'categorical');
                 const corr     = plotCols.length >= 2 ? corrMatrix(data, plotCols) : {};
                 const insights = genInsights(columns, types, stats, corr, numCols);
-                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader);
+                renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex);
             },
             error: err => {
                 document.getElementById('app').innerHTML = `
@@ -317,7 +336,7 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
-    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader) {
+    function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex) {
         const typeCounts = {};
         columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
         const typeIcons  = { numeric: '🔢', categorical: '🔤', boolean: '✅', date: '📅', empty: '⬜' };
@@ -341,11 +360,18 @@
 
             <div class="max-w-7xl mx-auto px-4 py-8 space-y-10">
 
-                <!-- No-header notice -->
-                ${!hasHeader ? `
-                <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
-                    <span class="shrink-0">🟡</span>
-                    <span class="text-sm text-white/80">No header row detected — columns have been assigned generic names (Column 1, Column 2, …)</span>
+                <!-- No-header / dropped-index notices -->
+                ${!hasHeader || droppedIndex ? `<div class="space-y-2">
+                    ${!hasHeader ? `
+                    <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
+                        <span class="shrink-0">🟡</span>
+                        <span class="text-sm text-white/80">No header row detected — columns have been assigned generic names (Column 1, Column 2, …)</span>
+                    </div>` : ''}
+                    ${droppedIndex ? `
+                    <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-950/50 border border-amber-500/20">
+                        <span class="shrink-0">🟡</span>
+                        <span class="text-sm text-white/80">First column looked like a row index (0, 1, 2, …) and was removed</span>
+                    </div>` : ''}
                 </div>` : ''}
 
                 <!-- Insights -->
