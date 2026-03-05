@@ -394,6 +394,34 @@
         });
     }
 
+    function recommendScaling(columns, types, stats) {
+        const rows = columns
+            .filter(c => types[c] === 'numeric')
+            .map(col => {
+                const s = stats[col];
+                const hasOutliers = s.outlierPct > 0.05;
+                const highSkew    = Math.abs(s.skewness) > 2;
+                const modSkew     = Math.abs(s.skewness) > 1;
+
+                if (hasOutliers || highSkew || modSkew) {
+                    if (highSkew && s.min > 0) {
+                        return { col, scaler: 'Log → StandardScaler', reason: `Skewness ${fmtNum(s.skewness)}, all positive`, level: 'transform' };
+                    }
+                    return {
+                        col,
+                        scaler: 'RobustScaler',
+                        reason: hasOutliers ? `${s.outlierCount.toLocaleString()} outliers (${pct(s.outlierPct)})${modSkew ? `, skewness ${fmtNum(s.skewness)}` : ''}` : `Skewness ${fmtNum(s.skewness)}`,
+                        level: 'robust',
+                    };
+                }
+                return { col, scaler: 'StandardScaler', reason: `Skewness ${fmtNum(s.skewness)}`, level: 'standard' };
+            });
+
+        const overall = rows.some(r => r.level === 'robust' || r.level === 'transform')
+            ? 'RobustScaler' : 'StandardScaler';
+        return { rows, overall };
+    }
+
     function detectDuplicates(data, columns) {
         const counts = new Map();
         data.forEach(row => {
@@ -547,6 +575,7 @@
         const corrHeight = Math.max(320, plotCols.length * 44 + 120);
 
         const dups          = detectDuplicates(data, columns);
+        const scaling       = numCols.length ? recommendScaling(columns, types, stats) : null;
         const splitRec      = recommendSplit(data, target, stats);
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
         const featureImpNum = featureImp.filter(f => f.type === 'numeric');
@@ -828,6 +857,48 @@
                         </table>
                     </div>
                 </section>
+
+                <!-- Scaling recommendations -->
+                ${scaling ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">⚖️ Feature Scaling</h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4 space-y-4">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Overall recommendation</div>
+                                <span class="text-sm font-semibold px-2.5 py-1 rounded-full ${scaling.overall === 'RobustScaler' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}">${scaling.overall}</span>
+                            </div>
+                            <div class="text-xs text-gray-400 ml-auto">Not needed for tree-based models (Random Forest, XGBoost, LightGBM)</div>
+                        </div>
+                        ${scaling.rows.length ? `
+                        <table class="text-sm w-full">
+                            <thead>
+                                <tr class="border-b border-gray-100">
+                                    <th class="text-left text-xs font-semibold text-gray-400 py-1 pr-3">Column</th>
+                                    <th class="text-left text-xs font-semibold text-gray-400 py-1 px-3">Scaler</th>
+                                    <th class="text-left text-xs font-semibold text-gray-400 py-1 px-3 hidden sm:table-cell">Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${scaling.rows.map((r, i) => {
+                                    const badge = {
+                                        standard:  'bg-blue-50 text-blue-700',
+                                        robust:    'bg-amber-50 text-amber-700',
+                                        transform: 'bg-purple-50 text-purple-700',
+                                    }[r.level];
+                                    return `
+                                    <tr class="${i % 2 === 0 ? '' : 'bg-gray-50'} border-b border-gray-50 last:border-0">
+                                        <td class="py-1.5 pr-3 font-medium text-gray-800">${r.col}</td>
+                                        <td class="py-1.5 px-3 whitespace-nowrap">
+                                            <span class="text-xs font-medium px-2 py-0.5 rounded-full ${badge}">${r.scaler}</span>
+                                        </td>
+                                        <td class="py-1.5 px-3 text-xs text-gray-400 hidden sm:table-cell">${r.reason}</td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>` : ''}
+                    </div>
+                </section>` : ''}
 
                 <!-- Train / Test Split -->
                 ${splitRec ? `
