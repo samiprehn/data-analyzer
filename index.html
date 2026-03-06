@@ -890,7 +890,33 @@
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    function resetApp() { renderUpload(); }
+    let _state = null;
+
+    function resetApp() { _state = null; renderUpload(); }
+
+    function buildTarget(col, types, stats) {
+        const type = types[col];
+        const st = stats[col];
+        if (!st) return null;
+        if (type === 'categorical' || type === 'boolean') {
+            const u = st.unique;
+            const top = (st.topValues || []).slice(0, 3).map(v => `"${v.v}"`).join(', ');
+            return { col, taskType: 'classification', subType: u === 2 ? 'Binary' : `${u}-class`,
+                     detail: `${u} classes: ${top}${u > 3 ? '…' : ''}`, confidence: 'manual' };
+        } else if (type === 'numeric') {
+            return { col, taskType: 'regression', subType: null,
+                     detail: st.min !== undefined ? `Range: ${fmtNum(st.min, 2)} – ${fmtNum(st.max, 2)}` : '',
+                     confidence: 'manual' };
+        }
+        return null;
+    }
+
+    function changeTarget(col) {
+        if (!_state) return;
+        const { file, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex } = _state;
+        const target = col === '__none__' ? null : buildTarget(col, types, stats);
+        renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex, target);
+    }
 
     function renderUpload() {
         document.getElementById('app').innerHTML = `
@@ -970,6 +996,7 @@
                 const corr     = plotCols.length >= 2 ? corrMatrix(data, plotCols) : {};
                 const insights = genInsights(columns, types, stats, corr, numCols);
                 const target   = detectTarget(columns, types, stats);
+                _state = { file, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex };
                 renderAnalysis(file.name, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex, target);
             },
             error: err => {
@@ -1031,9 +1058,17 @@
                         <button onclick="resetApp()" class="text-white/40 hover:text-white transition text-sm shrink-0">← Back</button>
                         <span class="text-white font-semibold truncate">${filename}</span>
                     </div>
-                    <div class="flex gap-4 text-sm text-white/50 shrink-0">
+                    <div class="flex items-center gap-4 text-sm text-white/50 shrink-0">
                         <span><span class="text-white font-semibold">${data.length.toLocaleString()}</span> rows</span>
                         <span><span class="text-white font-semibold">${columns.length}</span> cols</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-white/40 text-xs">Target</span>
+                            <select onchange="changeTarget(this.value)"
+                                    class="bg-white/10 text-white text-xs rounded px-2 py-1 border border-white/20 focus:outline-none cursor-pointer">
+                                <option value="__none__" ${!target ? 'selected' : ''}>none</option>
+                                ${columns.map(col => `<option value="${col}" ${target && target.col === col ? 'selected' : ''}>${col}</option>`).join('')}
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
