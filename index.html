@@ -157,10 +157,16 @@
     function detectElbow(wcssArr) {
         const n = wcssArr.length;
         if (n < 3) return Math.min(2, n);
-        let maxD2 = -Infinity, bestIdx = 1;
+        // Kneedle method: normalize both axes to [0,1], find point furthest
+        // below the chord connecting endpoints — scale-invariant and reliable.
+        const yMax = wcssArr[0], yMin = wcssArr[n - 1];
+        const yRange = yMax - yMin || 1;
+        let maxDist = -Infinity, bestIdx = 1;
         for (let i = 1; i < n - 1; i++) {
-            const d2 = wcssArr[i - 1] - 2 * wcssArr[i] + wcssArr[i + 1];
-            if (d2 > maxD2) { maxD2 = d2; bestIdx = i; }
+            const knorm = i / (n - 1);
+            const wnorm = (wcssArr[i] - yMin) / yRange;
+            const dist  = 1 - knorm - wnorm; // distance below chord (positive = below)
+            if (dist > maxDist) { maxDist = dist; bestIdx = i; }
         }
         return Math.max(2, Math.min(n, bestIdx + 1));
     }
