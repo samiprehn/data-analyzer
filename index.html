@@ -1125,6 +1125,7 @@
                                 <span class="font-semibold text-gray-800">${target.taskType === 'classification' ? 'Classification' : 'Regression'}</span>
                                 ${target.subType ? `<span class="text-xs font-medium px-2 py-0.5 rounded-full ${target.taskType === 'classification' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${target.subType}</span>` : ''}
                             </div>
+                            <div class="text-sm text-gray-600">Predicted column: <span class="font-semibold text-gray-800">${target.col}</span></div>
                             ${imbalance ? `
                             <div class="mt-2">
                                 <div class="flex h-2.5 rounded-full overflow-hidden gap-px mb-1.5">
