@@ -77,6 +77,85 @@
         return +val;
     }
 
+    // ── K-Means clustering ────────────────────────────────────────────────────
+
+    function kMeansRun(X, k, maxIter = 100, restarts = 3) {
+        const n = X.length, dims = X[0].length;
+        let bestWcss = Infinity, bestLabels = null, bestCentroids = null;
+        for (let r = 0; r < restarts; r++) {
+            // k-means++ initialization
+            const centroids = [X[Math.floor(Math.random() * n)].slice()];
+            for (let ci = 1; ci < k; ci++) {
+                const dists = X.map(x => {
+                    let minD = Infinity;
+                    for (const c of centroids) {
+                        let d2 = 0;
+                        for (let j = 0; j < dims; j++) d2 += (x[j] - c[j]) ** 2;
+                        if (d2 < minD) minD = d2;
+                    }
+                    return minD;
+                });
+                const total = dists.reduce((s, v) => s + v, 0);
+                let rnd = Math.random() * total, chosen = n - 1;
+                for (let i = 0; i < n; i++) { rnd -= dists[i]; if (rnd <= 0) { chosen = i; break; } }
+                centroids.push(X[chosen].slice());
+            }
+            // Lloyd's algorithm
+            const labels = new Array(n).fill(0);
+            for (let iter = 0; iter < maxIter; iter++) {
+                let changed = false;
+                for (let i = 0; i < n; i++) {
+                    let minD = Infinity, minK = 0;
+                    for (let ci = 0; ci < k; ci++) {
+                        let d2 = 0;
+                        for (let j = 0; j < dims; j++) d2 += (X[i][j] - centroids[ci][j]) ** 2;
+                        if (d2 < minD) { minD = d2; minK = ci; }
+                    }
+                    if (labels[i] !== minK) { labels[i] = minK; changed = true; }
+                }
+                if (!changed) break;
+                const sums = Array.from({ length: k }, () => new Array(dims).fill(0));
+                const counts = new Array(k).fill(0);
+                for (let i = 0; i < n; i++) {
+                    counts[labels[i]]++;
+                    for (let j = 0; j < dims; j++) sums[labels[i]][j] += X[i][j];
+                }
+                for (let ci = 0; ci < k; ci++)
+                    if (counts[ci] > 0)
+                        for (let j = 0; j < dims; j++) centroids[ci][j] = sums[ci][j] / counts[ci];
+            }
+            let wcss = 0;
+            for (let i = 0; i < n; i++)
+                for (let j = 0; j < dims; j++) wcss += (X[i][j] - centroids[labels[i]][j]) ** 2;
+            if (wcss < bestWcss) {
+                bestWcss = wcss;
+                bestLabels = labels.slice();
+                bestCentroids = centroids.map(c => c.slice());
+            }
+        }
+        return { wcss: bestWcss, labels: bestLabels, centroids: bestCentroids };
+    }
+
+    function kMeansElbow(X, maxK) {
+        const results = [];
+        for (let k = 1; k <= maxK; k++) {
+            const { wcss, labels, centroids } = kMeansRun(X, k);
+            results.push({ k, wcss, labels, centroids });
+        }
+        return results;
+    }
+
+    function detectElbow(wcssArr) {
+        const n = wcssArr.length;
+        if (n < 3) return Math.min(2, n);
+        let maxD2 = -Infinity, bestIdx = 1;
+        for (let i = 1; i < n - 1; i++) {
+            const d2 = wcssArr[i - 1] - 2 * wcssArr[i] + wcssArr[i + 1];
+            if (d2 > maxD2) { maxD2 = d2; bestIdx = i; }
+        }
+        return Math.max(2, Math.min(n, bestIdx + 1));
+    }
+
     // ── Header detection ─────────────────────────────────────────────────────
 
     function detectHeader(rows) {
@@ -891,8 +970,9 @@
     // ── Rendering ─────────────────────────────────────────────────────────────
 
     let _state = null;
+    let _kmCache = null;
 
-    function resetApp() { _state = null; renderUpload(); }
+    function resetApp() { _state = null; _kmCache = null; renderUpload(); }
 
     function buildTarget(col, types, stats) {
         const type = types[col];
@@ -1024,6 +1104,48 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
+    const _KM_PALETTE = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16','#ec4899','#14b8a6'];
+
+    function showClusterProfiles(k) {
+        if (!_kmCache) return;
+        const { kCols, colMeans, colStds, elbowData } = _kmCache;
+        const entry = elbowData.find(d => d.k === k);
+        if (!entry) return;
+        const sizes = new Array(k).fill(0);
+        entry.labels.forEach(l => sizes[l]++);
+        const centroids = entry.centroids.map(centroid =>
+            centroid.map((v, di) => colStds[di] > 0 ? v * colStds[di] + colMeans[di] : colMeans[di])
+        );
+        const html = `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            ${centroids.map((centroid, ci) => `
+            <div class="rounded-lg border border-gray-100 overflow-hidden">
+                <div class="h-1.5" style="background:${_KM_PALETTE[ci % _KM_PALETTE.length]}"></div>
+                <div class="p-3">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-semibold text-gray-700">Cluster ${ci + 1}</span>
+                        <span class="text-xs text-gray-400">${sizes[ci].toLocaleString()} pts</span>
+                    </div>
+                    <table class="text-xs w-full">
+                        ${kCols.map((col, di) => `
+                        <tr class="border-b border-gray-50 last:border-0">
+                            <td class="py-0.5 pr-2 text-gray-500 truncate" style="max-width:120px" title="${col}">${col}</td>
+                            <td class="py-0.5 text-right font-mono text-gray-700">${fmtNum(centroid[di], 3)}</td>
+                        </tr>`).join('')}
+                    </table>
+                </div>
+            </div>`).join('')}
+        </div>`;
+        const el = document.getElementById('km-profiles');
+        if (el) el.innerHTML = html;
+        elbowData.filter(d => d.k >= 2).forEach(d => {
+            const btn = document.getElementById(`km-btn-${d.k}`);
+            if (!btn) return;
+            btn.className = d.k === k
+                ? 'text-xs px-2 py-1 rounded border bg-indigo-600 text-white border-indigo-600'
+                : 'text-xs px-2 py-1 rounded border bg-white text-gray-600 border-gray-200 hover:border-indigo-400 hover:text-indigo-600';
+        });
+    }
+
     function renderAnalysis(filename, data, columns, types, stats, numCols, plotCols, catCols, corr, insights, hasHeader, droppedIndex, target) {
         const typeCounts = {};
         columns.forEach(c => { typeCounts[types[c]] = (typeCounts[types[c]] || 0) + 1; });
@@ -1035,6 +1157,35 @@
         const hypTests      = target ? runHypothesisTests(data, columns, types, stats, target) : null;
         const scaling       = numCols.length ? recommendScaling(columns, types, stats) : null;
         const clustering    = clusteringReadiness(columns, types, stats);
+
+        let kmData = null;
+        if (clustering.featureCount >= 2 && data.length >= 20) {
+            const kCols = clustering.usable;
+            if (_kmCache && _kmCache.kCols.join('\x00') === kCols.join('\x00')) {
+                kmData = _kmCache;
+            } else {
+                const kRows = data.filter(row =>
+                    kCols.every(c => { const v = toNum(row[c]); return !isNaN(v); })
+                );
+                if (kRows.length >= 20) {
+                    const colMeans = kCols.map(c => mean(kRows.map(r => toNum(r[c]))));
+                    const colStds  = kCols.map(c => std(kRows.map(r => toNum(r[c]))));
+                    const step   = Math.ceil(kRows.length / 2000);
+                    const sample = kRows.filter((_, i) => i % step === 0);
+                    const X = sample.map(row =>
+                        kCols.map((c, i) => colStds[i] > 0 ? (toNum(row[c]) - colMeans[i]) / colStds[i] : 0)
+                    );
+                    const maxK = Math.min(10, Math.floor(X.length / 5));
+                    if (maxK >= 2) {
+                        const elbowData = kMeansElbow(X, maxK);
+                        const bestK     = detectElbow(elbowData.map(d => d.wcss));
+                        kmData = { kCols, colMeans, colStds, elbowData, bestK };
+                        _kmCache = kmData;
+                    }
+                }
+            }
+        }
+
         const pca           = plotCols.length >= 2 ? pcaVarianceHint(plotCols, corr) : null;
         const splitRec      = recommendSplit(data, target, stats);
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
@@ -1569,6 +1720,21 @@
                         </div>
                         ${clustering.excludedHighNull.length ? `
                         <div class="text-xs text-red-500">⚠ ${clustering.excludedHighNull.map(c => `<b>${c}</b>`).join(', ')} excluded — ≥50% missing values</div>` : ''}
+                        ${kmData ? `
+                        <div class="border-t border-gray-100 pt-4 mt-2">
+                            <div class="text-xs font-semibold text-gray-500 mb-2">Elbow Chart (k-means inertia)</div>
+                            <div id="km-elbow" style="height:220px"></div>
+                            <div class="flex items-center gap-2 mt-3 mb-3 flex-wrap">
+                                <span class="text-xs text-gray-500">Show profiles for k =</span>
+                                ${kmData.elbowData.filter(d => d.k >= 2).map(d => `
+                                <button onclick="showClusterProfiles(${d.k})"
+                                        id="km-btn-${d.k}"
+                                        class="text-xs px-2 py-1 rounded border bg-white text-gray-600 border-gray-200 hover:border-indigo-400 hover:text-indigo-600">
+                                    ${d.k}${d.k === kmData.bestK ? ' ★' : ''}
+                                </button>`).join('')}
+                            </div>
+                            <div id="km-profiles"></div>
+                        </div>` : ''}
                     </div>
                 </section>` : ''}
 
@@ -1808,6 +1974,24 @@
                     legend: { orientation: 'h', y: -0.2, x: 0.5, xanchor: 'center', font: { size: 11 } },
                     bargap: 0.3,
                 }, CFG);
+            }
+
+            // K-means elbow chart
+            if (kmData) {
+                const { elbowData, bestK } = kmData;
+                Plotly.newPlot('km-elbow', [{
+                    type: 'scatter', mode: 'lines+markers',
+                    x: elbowData.map(d => d.k),
+                    y: elbowData.map(d => d.wcss),
+                    marker: { color: elbowData.map(d => d.k === bestK ? '#6366f1' : '#d1d5db'), size: 8 },
+                    line: { color: '#e5e7eb' },
+                }], {
+                    margin: { t: 10, r: 20, b: 40, l: 60 },
+                    xaxis: { title: 'k', dtick: 1, color: '#6b7280' },
+                    yaxis: { title: 'Inertia (WCSS)', color: '#6b7280' },
+                    paper_bgcolor: 'white', plot_bgcolor: 'white',
+                }, CFG);
+                showClusterProfiles(bestK);
             }
         }, 0);
     }
