@@ -1062,7 +1062,7 @@
                         <span><span class="text-white font-semibold">${data.length.toLocaleString()}</span> rows</span>
                         <span><span class="text-white font-semibold">${columns.length}</span> cols</span>
                         <div class="flex items-center gap-2">
-                            <span class="text-white/40 text-xs">Focus</span>
+                            <span class="text-white/40 text-xs cursor-help" title="Column you're trying to predict">Focus</span>
                             <select onchange="changeTarget(this.value)"
                                     class="bg-white/10 text-white text-xs rounded px-2 py-1 border border-white/20 focus:outline-none cursor-pointer">
                                 <option value="__none__" ${!target ? 'selected' : ''}>none</option>
@@ -1113,7 +1113,7 @@
                 <!-- Target column -->
                 ${target ? `
                 <section>
-                    <h2 class="text-base font-semibold text-white mb-3">🎯 Focus Column</h2>
+                    <h2 class="text-base font-semibold text-white mb-3">🎯 Focus Column <span class="text-white/30 font-normal text-sm">(value being predicted)</span></h2>
                     <div class="bg-white rounded-xl shadow-sm p-4 flex items-start gap-4">
                         <div class="text-3xl shrink-0">🏹</div>
                         <div class="min-w-0 flex-1">
