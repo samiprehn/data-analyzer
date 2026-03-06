@@ -1119,6 +1119,190 @@
         return `<div><div class="text-xs text-gray-400 mb-0.5">${label}</div><div class="font-semibold text-gray-800 text-sm">${value}</div></div>`;
     }
 
+    // ── Decision Tree ─────────────────────────────────────────────────────────
+
+    function dtImpurity(rows, col, taskType) {
+        if (!rows.length) return 0;
+        if (taskType === 'regression') {
+            const vals = rows.map(r => toNum(r[col])).filter(v => !isNaN(v));
+            if (vals.length < 2) return 0;
+            const m = mean(vals);
+            return vals.reduce((s, v) => s + (v - m) ** 2, 0) / vals.length;
+        }
+        const counts = {};
+        rows.forEach(r => { const v = String(r[col] ?? ''); counts[v] = (counts[v] || 0) + 1; });
+        const n = rows.length;
+        return 1 - Object.values(counts).reduce((s, c) => s + (c / n) ** 2, 0);
+    }
+
+    function dtBestSplit(rows, features, types, col, taskType) {
+        let bestGain = 1e-9, bestFeat = null, bestThr = null, bestSplitType = null;
+        const baseImp = dtImpurity(rows, col, taskType);
+        const n = rows.length;
+        for (const feat of features) {
+            if (types[feat] === 'numeric' || types[feat] === 'boolean') {
+                const vals = rows.map(r => toNum(r[feat])).filter(v => !isNaN(v));
+                const sorted = [...new Set(vals)].sort((a, b) => a - b);
+                if (sorted.length < 2) continue;
+                const step = Math.max(1, Math.floor(sorted.length / 20));
+                for (let i = 0; i < sorted.length - 1; i += step) {
+                    const t = (sorted[i] + sorted[Math.min(i + step, sorted.length - 1)]) / 2;
+                    const left  = rows.filter(r => { const v = toNum(r[feat]); return !isNaN(v) && v <= t; });
+                    const right = rows.filter(r => { const v = toNum(r[feat]); return !isNaN(v) && v > t; });
+                    if (!left.length || !right.length) continue;
+                    const gain = baseImp
+                        - (left.length / n)  * dtImpurity(left,  col, taskType)
+                        - (right.length / n) * dtImpurity(right, col, taskType);
+                    if (gain > bestGain) { bestGain = gain; bestFeat = feat; bestThr = t; bestSplitType = 'numeric'; }
+                }
+            } else if (types[feat] === 'categorical') {
+                const uniq = [...new Set(rows.map(r => String(r[feat] ?? '')).filter(v => v !== ''))];
+                if (uniq.length < 2) continue;
+                for (const v of uniq) {
+                    const left  = rows.filter(r => String(r[feat] ?? '') === v);
+                    const right = rows.filter(r => String(r[feat] ?? '') !== v);
+                    if (!left.length || !right.length) continue;
+                    const gain = baseImp
+                        - (left.length / n)  * dtImpurity(left,  col, taskType)
+                        - (right.length / n) * dtImpurity(right, col, taskType);
+                    if (gain > bestGain) { bestGain = gain; bestFeat = feat; bestThr = v; bestSplitType = 'categorical'; }
+                }
+            }
+        }
+        return bestFeat ? { feat: bestFeat, thr: bestThr, splitType: bestSplitType, gain: bestGain } : null;
+    }
+
+    function dtBuild(rows, features, types, col, taskType, depth = 0, maxDepth = 3, minLeaf = 5) {
+        const n = rows.length;
+        const imp = dtImpurity(rows, col, taskType);
+        let value, classes = null;
+        if (taskType === 'regression') {
+            const vals = rows.map(r => toNum(r[col])).filter(v => !isNaN(v));
+            value = vals.length ? mean(vals) : 0;
+        } else {
+            const counts = {};
+            rows.forEach(r => { const v = String(r[col] ?? ''); counts[v] = (counts[v] || 0) + 1; });
+            value = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+            classes = counts;
+        }
+        const leaf = { n, imp, value, classes, isLeaf: true, depth };
+        if (depth >= maxDepth || n < minLeaf * 2 || imp < 1e-7) return leaf;
+        const split = dtBestSplit(rows, features, types, col, taskType);
+        if (!split) return leaf;
+        const leftRows  = split.splitType === 'numeric'
+            ? rows.filter(r => { const v = toNum(r[split.feat]); return !isNaN(v) && v <= split.thr; })
+            : rows.filter(r => String(r[split.feat] ?? '') === split.thr);
+        const rightRows = split.splitType === 'numeric'
+            ? rows.filter(r => { const v = toNum(r[split.feat]); return !isNaN(v) && v > split.thr; })
+            : rows.filter(r => String(r[split.feat] ?? '') !== split.thr);
+        if (leftRows.length < minLeaf || rightRows.length < minLeaf) return leaf;
+        return { ...leaf, isLeaf: false, feat: split.feat, thr: split.thr, splitType: split.splitType, gain: split.gain,
+            left:  dtBuild(leftRows,  features, types, col, taskType, depth + 1, maxDepth, minLeaf),
+            right: dtBuild(rightRows, features, types, col, taskType, depth + 1, maxDepth, minLeaf) };
+    }
+
+    function dtPredict(node, row) {
+        if (node.isLeaf) return node.value;
+        const goLeft = node.splitType === 'numeric'
+            ? (v => !isNaN(v) && v <= node.thr)(toNum(row[node.feat]))
+            : String(row[node.feat] ?? '') === node.thr;
+        return dtPredict(goLeft ? node.left : node.right, row);
+    }
+
+    function dtEvaluate(root, rows, col, taskType) {
+        if (!rows.length) return null;
+        if (taskType === 'regression') {
+            const valid = rows.filter(r => !isNaN(toNum(r[col])));
+            if (!valid.length) return { r2: null };
+            const actuals = valid.map(r => toNum(r[col]));
+            const preds   = valid.map(r => Number(dtPredict(root, r)));
+            const mse_    = mean(preds.map((p, i) => (p - actuals[i]) ** 2));
+            const m       = mean(actuals);
+            const tss     = mean(actuals.map(v => (v - m) ** 2));
+            return { r2: tss > 0 ? 1 - mse_ / tss : 1, mse: mse_ };
+        }
+        let correct = 0;
+        rows.forEach(r => { if (dtPredict(root, r) === String(r[col] ?? '')) correct++; });
+        return { accuracy: correct / rows.length };
+    }
+
+    function dtImportance(root) {
+        const imp = {};
+        const walk = n => { if (n.isLeaf) return; imp[n.feat] = (imp[n.feat] || 0) + n.gain * n.n; walk(n.left); walk(n.right); };
+        walk(root);
+        const total = Object.values(imp).reduce((s, v) => s + v, 0) || 1;
+        return Object.entries(imp).map(([col, val]) => ({ col, score: val / total })).sort((a, b) => b.score - a.score);
+    }
+
+    function dtDepth(n) { return n.isLeaf ? 0 : 1 + Math.max(dtDepth(n.left), dtDepth(n.right)); }
+    function dtCount(n) { return n.isLeaf ? 1 : 1 + dtCount(n.left) + dtCount(n.right); }
+
+    function dtSVG(root, taskType) {
+        const LEAF_W = 155, LEVEL_H = 110, NW = 144, NH = 66, RX = 7;
+        const FONT = 'DM Sans, sans-serif';
+        let leafIdx = 0;
+
+        function leafCnt(n) { return n.isLeaf ? 1 : leafCnt(n.left) + leafCnt(n.right); }
+        function maxDep(n)  { return n.isLeaf ? 0 : 1 + Math.max(maxDep(n.left), maxDep(n.right)); }
+        const lc = leafCnt(root), depth = maxDep(root);
+        const W = Math.max(lc * LEAF_W, NW + 20), H = (depth + 1) * LEVEL_H + 30;
+
+        function assign(n, d) {
+            if (n.isLeaf) { n._x = (leafIdx++ + 0.5) * LEAF_W; n._y = d * LEVEL_H + NH / 2 + 15; }
+            else { assign(n.left, d + 1); assign(n.right, d + 1); n._x = (n.left._x + n.right._x) / 2; n._y = d * LEVEL_H + NH / 2 + 15; }
+        }
+        assign(root, 0);
+
+        const clsSet = new Set();
+        (function gather(n) { if (n.classes) Object.keys(n.classes).forEach(c => clsSet.add(c)); if (!n.isLeaf) { gather(n.left); gather(n.right); } })(root);
+        const pal = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16','#ec4899'];
+        const clsColor = Object.fromEntries([...clsSet].map((c, i) => [c, pal[i % pal.length]]));
+
+        function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+        function trunc(s, n) { const t = String(s); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+
+        let edges = '', nodes = '';
+        function render(n) {
+            const bx = n._x - NW / 2, by = n._y - NH / 2;
+            let fill = '#f5f6ff', stroke = '#818cf8';
+            if (n.isLeaf) {
+                if (taskType === 'classification' && n.value) { const c = clsColor[n.value] || '#6366f1'; fill = c + '22'; stroke = c; }
+                else { fill = '#f0fdf4'; stroke = '#34d399'; }
+            }
+            if (!n.isLeaf) {
+                const y1 = n._y + NH / 2, midY = (n._y + NH / 2 + n.left._y - NH / 2) / 2;
+                [n.left, n.right].forEach((child, side) => {
+                    edges += `<path d="M${n._x},${y1} C${n._x},${midY} ${child._x},${midY} ${child._x},${child._y - NH / 2}" fill="none" stroke="#cbd5e1" stroke-width="1.5"/>`;
+                    const lx = (n._x * 1 + child._x * 2) / 3;
+                    edges += `<text x="${lx}" y="${midY - 4}" font-size="8" fill="#94a3b8" text-anchor="middle" font-family="${FONT}">${side === 0 ? 'yes' : 'no'}</text>`;
+                });
+            }
+            nodes += `<rect x="${bx}" y="${by}" width="${NW}" height="${NH}" rx="${RX}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+            if (!n.isLeaf) {
+                const cond = n.splitType === 'numeric'
+                    ? `${trunc(n.feat, 14)} ≤ ${fmtNum(n.thr, 3)}`
+                    : `${trunc(n.feat, 11)} = "${trunc(n.thr, 9)}"`;
+                nodes += `<text x="${n._x}" y="${by+16}" font-size="9.5" font-weight="600" fill="#1e293b" text-anchor="middle" font-family="${FONT}">${esc(cond)}</text>`;
+                nodes += `<text x="${n._x}" y="${by+31}" font-size="8.5" fill="#64748b" text-anchor="middle" font-family="${FONT}">n = ${n.n}</text>`;
+                nodes += `<text x="${n._x}" y="${by+46}" font-size="8" fill="#94a3b8" text-anchor="middle" font-family="${FONT}">${taskType === 'regression' ? 'mse' : 'gini'} = ${fmtNum(n.imp, 3)}</text>`;
+            } else {
+                const label = taskType === 'regression' ? fmtNum(n.value, 3) : trunc(String(n.value), 20);
+                const lclr  = taskType === 'classification' ? (clsColor[n.value] || '#1e293b') : '#059669';
+                nodes += `<text x="${n._x}" y="${by+16}" font-size="10" font-weight="700" fill="${lclr}" text-anchor="middle" font-family="${FONT}">${esc(label)}</text>`;
+                nodes += `<text x="${n._x}" y="${by+31}" font-size="8.5" fill="#64748b" text-anchor="middle" font-family="${FONT}">n = ${n.n}</text>`;
+                nodes += `<text x="${n._x}" y="${by+46}" font-size="8" fill="#94a3b8" text-anchor="middle" font-family="${FONT}">${taskType === 'regression' ? 'mse' : 'gini'} = ${fmtNum(n.imp, 3)}</text>`;
+                if (n.classes) {
+                    const top2 = Object.entries(n.classes).sort((a, b) => b[1] - a[1]).slice(0, 2);
+                    const ds = top2.map(([c, cnt]) => `${trunc(c, 8)} ${Math.round(cnt / n.n * 100)}%`).join(' · ');
+                    nodes += `<text x="${n._x}" y="${by+59}" font-size="7.5" fill="#94a3b8" text-anchor="middle" font-family="${FONT}">${esc(ds)}</text>`;
+                }
+            }
+            if (!n.isLeaf) { render(n.left); render(n.right); }
+        }
+        render(root);
+        return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="min-width:${Math.min(W, 900)}px;width:100%;height:${H}px;display:block">${edges}${nodes}</svg></div>`;
+    }
+
     const _KM_PALETTE = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#06b6d4','#f97316','#84cc16','#ec4899','#14b8a6'];
 
     function showClusterProfiles(k) {
@@ -1210,6 +1394,27 @@
         const featureImp    = target ? featureImportance(data, columns, types, stats, target) : [];
         const featureImpNum = featureImp.filter(f => f.type === 'numeric');
         const featureImpCat = featureImp.filter(f => f.type === 'categorical' || f.type === 'boolean');
+
+        let dtResult = null;
+        if (target) {
+            try {
+                const dtCols = columns.filter(c =>
+                    c !== target.col &&
+                    (types[c] === 'numeric' || types[c] === 'boolean' ||
+                     (types[c] === 'categorical' && stats[c].unique >= 2 && stats[c].unique <= 10 && stats[c].nullPct < 0.5))
+                ).slice(0, 30);
+                if (dtCols.length >= 1) {
+                    const allRows = data.filter(r => r[target.col] !== null && r[target.col] !== undefined && r[target.col] !== '');
+                    if (allRows.length >= 20) {
+                        const step2 = Math.ceil(allRows.length / 3000);
+                        const sample2 = step2 > 1 ? allRows.filter((_, i) => i % step2 === 0) : allRows;
+                        const root = dtBuild(sample2, dtCols, types, target.col, target.taskType);
+                        const eval_ = dtEvaluate(root, sample2, target.col, target.taskType);
+                        dtResult = { root, eval: eval_, importance: dtImportance(root), depth: dtDepth(root), nodeCount: dtCount(root) };
+                    }
+                }
+            } catch(e) { console.error('DT error:', e); }
+        }
         const encSummary  = encodeAbility(columns, types, stats, target);
         const imbalance  = (() => {
             if (!target || target.taskType !== 'classification') return null;
@@ -1534,6 +1739,49 @@
                             <div class="text-sm font-semibold text-gray-600 mb-1">Categorical &amp; Boolean</div>
                             <div class="text-xs text-gray-400 mb-2">V Cramér's V</div>
                             <div id="feat-imp-cat" style="height:${Math.max(160, featureImpCat.length * 28 + 60)}px"></div>
+                        </div>` : ''}
+                    </div>
+                </section>` : ''}
+
+                <!-- Decision Tree -->
+                ${target && dtResult ? `
+                <section>
+                    <h2 class="text-base font-semibold text-white mb-3">🌳 Decision Tree <span class="text-white/30 font-normal text-sm">depth ≤ 3, training only</span></h2>
+                    <div class="bg-white rounded-xl shadow-sm p-4 space-y-4">
+                        <div class="flex flex-wrap items-center gap-6">
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Depth</div>
+                                <div class="text-xl font-bold text-gray-800">${dtResult.depth}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Nodes</div>
+                                <div class="text-xl font-bold text-gray-800">${dtResult.nodeCount}</div>
+                            </div>
+                            ${target.taskType === 'classification' ? `
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Training accuracy</div>
+                                <div class="text-xl font-bold text-indigo-600">${pct(dtResult.eval.accuracy)}</div>
+                            </div>` : `
+                            <div>
+                                <div class="text-xs text-gray-400 mb-0.5">Training R²</div>
+                                <div class="text-xl font-bold text-indigo-600">${dtResult.eval.r2 !== null ? fmtNum(dtResult.eval.r2, 3) : '—'}</div>
+                            </div>`}
+                            <div class="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">Not cross-validated</div>
+                        </div>
+                        <div id="dt-tree"></div>
+                        ${dtResult.importance.length ? `
+                        <div>
+                            <div class="text-xs font-semibold text-gray-500 mb-2">Feature importance (impurity reduction)</div>
+                            <div class="space-y-1.5">
+                                ${dtResult.importance.map(f => `
+                                <div class="flex items-center gap-3">
+                                    <div class="text-xs text-gray-600 w-32 shrink-0 truncate" title="${f.col}">${f.col}</div>
+                                    <div class="flex-1 bg-gray-100 rounded-full h-2 min-w-0">
+                                        <div class="bg-indigo-500 h-2 rounded-full" style="width:${pct(f.score)}"></div>
+                                    </div>
+                                    <div class="text-xs font-mono text-gray-400 shrink-0 w-8 text-right">${fmtNum(f.score, 2)}</div>
+                                </div>`).join('')}
+                            </div>
                         </div>` : ''}
                     </div>
                 </section>` : ''}
@@ -1955,6 +2203,11 @@
                     customdata: featureImpCat.map(f => f.method),
                     hovertemplate: '%{y}: %{x:.3f} (%{customdata})<extra></extra>',
                 }], impLayout, CFG);
+            }
+
+            // Decision tree
+            if (dtResult && document.getElementById('dt-tree')) {
+                document.getElementById('dt-tree').innerHTML = dtSVG(dtResult.root, target.taskType);
             }
 
             // PCA scree plot
