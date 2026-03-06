@@ -466,7 +466,7 @@
         }));
         const df = (rowCats.length - 1) * (colCats.length - 1);
         const k  = Math.min(rowCats.length, colCats.length);
-        return { chi2, df, p: chiSqPValue(chi2, df), cramersV: Math.sqrt(chi2 / (n * (k - 1))), n, r: rowCats.length, c: colCats.length };
+        return { chi2, df, p: chiSqPValue(chi2, df), cramersV: Math.sqrt(chi2 / (n * (k - 1))), n, r: rowCats.length, c: colCats.length, table, rowCats, colCats, rowTotals };
     }
 
     function pearsonTest(x, y) {
@@ -536,11 +536,16 @@
                         const res = anova1way(groupArrays);
                         if (!res) return;
                         const eff = effectSizeLabel('eta2', res.etaSq);
+                        const anovaKeyResult = groupKeys
+                            .map((k, i) => ({ k, m: res.groupMeans[i] }))
+                            .sort((a, b) => b.m - a.m)
+                            .map(x => `${x.k}: ${fmtNum(x.m, 2)}`)
+                            .join(' · ');
                         results.push({
                             varA: col, varB: tCol, testName: 'One-way ANOVA', n: res.n,
                             statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
                             effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
-                            keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
+                            keyResult: anovaKeyResult,
                         });
                     }
                 } else if (isCatFeature && stats[col].unique <= 20) {
@@ -553,11 +558,32 @@
                     const res = chiSqTest(xVals, yVals);
                     if (!res) return;
                     const eff = effectSizeLabel('V', res.cramersV);
+                    const rateRows = res.rowCats.map((r, ri) => {
+                        const total = res.rowTotals[ri];
+                        const rates = res.colCats.map(c => ({ c, rate: total > 0 ? res.table[r][c] / total : 0 }));
+                        return { label: r, rates };
+                    });
+                    let chiKeyResult;
+                    if (res.colCats.length === 2) {
+                        const posClass = res.colCats[1];
+                        chiKeyResult = rateRows
+                            .map(row => ({ label: row.label, rate: row.rates.find(x => x.c === posClass).rate }))
+                            .sort((a, b) => b.rate - a.rate)
+                            .map(x => `${x.label}: ${(x.rate * 100).toFixed(0)}%`)
+                            .join(' · ');
+                    } else {
+                        chiKeyResult = rateRows
+                            .map(row => {
+                                const best = row.rates.reduce((a, b) => a.rate > b.rate ? a : b);
+                                return `${row.label}→${best.c}(${(best.rate * 100).toFixed(0)}%)`;
+                            })
+                            .join(' · ');
+                    }
                     results.push({
                         varA: col, varB: tCol, testName: 'Chi-squared', n: res.n,
                         statLabel: `χ²=${fmtNum(res.chi2, 3)}`, p: res.p,
                         effectSize: `V=${fmtNum(res.cramersV, 3)} ${eff}`,
-                        keyResult: `df=${res.df}, ${res.r}×${res.c} table`,
+                        keyResult: chiKeyResult,
                     });
                 }
             } else if (tType === 'regression') {
@@ -605,11 +631,16 @@
                         const res = anova1way(groupArrays);
                         if (!res) return;
                         const eff = effectSizeLabel('eta2', res.etaSq);
+                        const anovaKeyResult = groupKeys
+                            .map((k, i) => ({ k, m: res.groupMeans[i] }))
+                            .sort((a, b) => b.m - a.m)
+                            .map(x => `${x.k}: ${fmtNum(x.m, 2)}`)
+                            .join(' · ');
                         results.push({
                             varA: col, varB: tCol, testName: 'One-way ANOVA', n: res.n,
                             statLabel: `F=${fmtNum(res.F, 3)}`, p: res.p,
                             effectSize: `η²=${fmtNum(res.etaSq, 3)} ${eff}`,
-                            keyResult: `${res.k} groups, F(${res.df1},${res.df2})`,
+                            keyResult: anovaKeyResult,
                         });
                     }
                 }
