@@ -26,6 +26,10 @@
     <div id="app"></div>
     <script>
 
+    // HTML-escape any value (incl. quotes, so it's safe in attributes) before it
+    // goes into innerHTML. Used everywhere CSV-derived text is rendered.
+    function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
     // ── Math helpers ──────────────────────────────────────────────────────────
 
     function fmtNum(n, d = 2) {
